@@ -553,8 +553,8 @@ function GolfPoolPage() {
                         const payout = isLeader
                           ? leaderboardData.ready
                             .slice(1)
-                            .reduce((sum, next) => sum + ((next.total ?? 0) - lowestTotal) * 2, 0)
-                          : scoreDiff * 2
+                            .reduce((sum, next) => sum + ((next.total ?? 0) - lowestTotal), 0)
+                          : scoreDiff
 
                         return (
                           <tr key={entry.id} className={isLeader ? 'rank-1' : ''}>

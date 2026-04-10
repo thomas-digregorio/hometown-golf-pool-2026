@@ -4,6 +4,8 @@ import { createFileRoute } from '@tanstack/react-router'
 import {
   DEFAULT_SETTINGS,
   FIELD,
+  SEEDED_ENTRIES,
+  SEEDED_MANUAL_SCORES,
   type Entry,
   type ManualScore,
   type PoolSettings,
@@ -146,6 +148,7 @@ async function loadState(): Promise<PoolState> {
 
 async function getEntries(): Promise<Entry[]> {
   const entries = await store.get(ENTRIES_KEY, { type: 'json' })
+  if (entries === null || entries === undefined) return SEEDED_ENTRIES
   if (!Array.isArray(entries)) return []
 
   return entries
@@ -181,6 +184,7 @@ async function getSettings(): Promise<PoolSettings> {
 
 async function getManualScores(): Promise<Record<string, ManualScore>> {
   const manualScores = await store.get(SCORES_KEY, { type: 'json' })
+  if (manualScores === null || manualScores === undefined) return SEEDED_MANUAL_SCORES
   if (!manualScores || typeof manualScores !== 'object') return {}
 
   const normalized: Record<string, ManualScore> = {}
