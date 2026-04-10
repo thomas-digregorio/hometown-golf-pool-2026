@@ -20,6 +20,12 @@ export type ManualScore = {
   mc: boolean
 }
 
+type SeedEntryInput = {
+  name: string
+  tiebreaker: number
+  picks: [string, string, string, string]
+}
+
 export const TOP5 = [
   'Scottie Scheffler',
   'Rory McIlroy',
@@ -196,7 +202,103 @@ export function parseHole(thru: string | null | undefined): string | null {
 }
 
 export const DEFAULT_SETTINGS: PoolSettings = {
-  picksOpen: true,
+  picksOpen: false,
   tournamentWinner: null,
-  cutLine: 6,
+  cutLine: 4,
+}
+
+const SEEDED_ENTRY_INPUTS: SeedEntryInput[] = [
+  {
+    name: 'Digoy',
+    tiebreaker: -12,
+    picks: ['Jon Rahm', 'Robert MacIntyre', 'Akshay Bhatia', 'Jacob Bridgeman'],
+  },
+  {
+    name: 'Elder',
+    tiebreaker: -12,
+    picks: ['Scottie Scheffler', 'Ludvig Åberg', 'Jordan Spieth', 'Justin Rose'],
+  },
+  {
+    name: 'Nerd*',
+    tiebreaker: -13,
+    picks: ['Scottie Scheffler', 'Ludvig Åberg', 'Collin Morikawa', 'Haotong Li'],
+  },
+  {
+    name: 'AT-CAM',
+    tiebreaker: -7,
+    picks: ['Scottie Scheffler', 'Ludvig Åberg', 'Collin Morikawa', 'J.J. Spaun'],
+  },
+  {
+    name: 'Austin*',
+    tiebreaker: -13,
+    picks: ['Scottie Scheffler', 'Cameron Young', 'Collin Morikawa', 'Jordan Spieth'],
+  },
+  {
+    name: 'G-Spot',
+    tiebreaker: -13,
+    picks: ['Xander Schauffele', 'Matt Fitzpatrick', 'Patrick Reed', 'Corey Conners'],
+  },
+  {
+    name: 'Smelly',
+    tiebreaker: -11,
+    picks: ['Jon Rahm', 'Hideki Matsuyama', 'Patrick Reed', 'Corey Conners'],
+  },
+  {
+    name: 'Alejandro',
+    tiebreaker: -13,
+    picks: ['Scottie Scheffler', 'Tommy Fleetwood', 'Min Woo Lee', 'Collin Morikawa'],
+  },
+  {
+    name: 'UM-CAM',
+    tiebreaker: -13,
+    picks: ['Scottie Scheffler', 'Matt Fitzpatrick', 'Russell Henley', 'Corey Conners'],
+  },
+  {
+    name: 'Cat Linden',
+    tiebreaker: -11,
+    picks: ['Xander Schauffele', 'Tommy Fleetwood', 'Justin Rose', 'Akshay Bhatia'],
+  },
+  {
+    name: 'Sir Atwell',
+    tiebreaker: -9,
+    picks: ['Matt Fitzpatrick', 'Scottie Scheffler', 'Si Woo Kim', 'Chris Gotterup'],
+  },
+]
+
+export const SEEDED_ENTRIES: Entry[] = SEEDED_ENTRY_INPUTS.map((entry, index) => ({
+  id: `seed-${String(index + 1).padStart(2, '0')}`,
+  name: entry.name,
+  pick1: entry.picks[0],
+  pick2: entry.picks[1],
+  pick3: entry.picks[2],
+  pick4: entry.picks[3],
+  tiebreaker: entry.tiebreaker,
+  createdAt: new Date(Date.UTC(2026, 3, 8, 12, index)).toISOString(),
+}))
+
+export const SEEDED_MANUAL_SCORES: Record<string, ManualScore> = {
+  'Scottie Scheffler': { topar: -2, mc: false },
+  'Rory McIlroy': { topar: -6, mc: false },
+  'Bryson DeChambeau': { topar: 5, mc: false },
+  'Jon Rahm': { topar: 4, mc: false },
+  'Xander Schauffele': { topar: -2, mc: false },
+  'Robert MacIntyre': { topar: 7, mc: false },
+  'Matt Fitzpatrick': { topar: 2, mc: false },
+  'Ludvig Åberg': { topar: 1, mc: false },
+  'Tommy Fleetwood': { topar: -1, mc: false },
+  'Cameron Young': { topar: 1, mc: false },
+  'Hideki Matsuyama': { topar: 1, mc: false },
+  'Patrick Reed': { topar: -3, mc: false },
+  'Jordan Spieth': { topar: 0, mc: false },
+  'Corey Conners': { topar: 2, mc: false },
+  'Russell Henley': { topar: 1, mc: false },
+  'Akshay Bhatia': { topar: 0, mc: false },
+  'Min Woo Lee': { topar: 11, mc: false },
+  'Collin Morikawa': { topar: 2, mc: false },
+  'J.J. Spaun': { topar: 6, mc: false },
+  'Si Woo Kim': { topar: 4, mc: false },
+  'Chris Gotterup': { topar: -2, mc: false },
+  'Justin Rose': { topar: -4, mc: false },
+  'Jacob Bridgeman': { topar: 1, mc: false },
+  'Haotong Li': { topar: 0, mc: false },
 }
