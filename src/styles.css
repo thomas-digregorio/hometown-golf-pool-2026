@@ -447,7 +447,11 @@ select:focus {
   background: var(--red-light);
   border-color: #f5b8b3;
   color: var(--red);
-  text-decoration: line-through;
+}
+
+.mc-used-score {
+  color: var(--red);
+  font-weight: 700;
 }
 
 .pick-chip.winner-pick {

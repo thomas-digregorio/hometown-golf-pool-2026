@@ -341,12 +341,14 @@ function GolfPoolPage() {
 
       const details = picks.map((pickName) => {
         const effective = getEffectiveScore(pickName)
+        const rawTopar = golferScores[pickName]?.topar ?? null
         if (effective.topar === null) allScored = false
         total += effective.topar ?? 0
 
         return {
           name: pickName,
           topar: effective.topar,
+          rawTopar,
           mc: effective.mc,
           wd: effective.wd,
           wdAfterCut: effective.wdAfterCut,
@@ -673,7 +675,14 @@ function GolfPoolPage() {
                                           ? ` WD (R3-4) (${fmtTopar(detail.topar)})`
                                           : ` WD/MC (${fmtTopar(detail.topar)})`
                                         : detail.mc
-                                          ? ' MC'
+                                          ? (
+                                            <>
+                                              {' MC '}
+                                              {detail.rawTopar !== null ? `(${fmtTopar(detail.rawTopar)})` : '(—)'}
+                                              {' '}
+                                              <span className="mc-used-score">{fmtTopar(detail.topar)}</span>
+                                            </>
+                                          )
                                           : `${scorePart}${detail.isWinner ? ' 🏆' : ''}`}
                                     </span>
                                   )
