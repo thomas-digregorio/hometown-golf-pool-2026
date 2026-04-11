@@ -152,8 +152,8 @@ function GolfPoolPage() {
           || statusName === 'STATUS_WD'
           || statusDisplay.includes('WITHDRAW')
           || /\bWD\b/.test(statusDisplay)
-        const isMissedCut = statusName === 'STATUS_MISSED_CUT' || statusName === 'STATUS_CUT'
         const toPar = parseTopar(competitor.score)
+        const lineScores = competitor.linescores ?? []
         const roundsPosted = (competitor.linescores ?? []).reduce((count, round) => {
           const hasRoundTopar = parseTopar(round.displayValue) !== null
           const hasHoleData = Array.isArray(round.linescores) && round.linescores.length > 0
@@ -161,11 +161,24 @@ function GolfPoolPage() {
         }, 0)
 
         let mcR1R2Topar: number | null = null
-        if ((isMissedCut || isWithdrawn) && (competitor.linescores?.length ?? 0) >= 2) {
-          const r1 = parseTopar(competitor.linescores?.[0]?.displayValue)
-          const r2 = parseTopar(competitor.linescores?.[1]?.displayValue)
+        if (lineScores.length >= 2) {
+          const r1 = parseTopar(lineScores[0]?.displayValue)
+          const r2 = parseTopar(lineScores[1]?.displayValue)
           mcR1R2Topar = r1 !== null && r2 !== null ? r1 + r2 : toPar
         }
+        const round3Holes = Array.isArray(lineScores[2]?.linescores) ? lineScores[2].linescores.length : 0
+        const isMissedCutByStatus =
+          statusName === 'STATUS_MISSED_CUT'
+          || statusName === 'STATUS_CUT'
+          || /\bMC\b/.test(statusDisplay)
+          || statusDisplay.includes('MISSED CUT')
+        const isMissedCutByScore =
+          !isWithdrawn
+          && mcR1R2Topar !== null
+          && mcR1R2Topar > settings.cutLine
+          && roundsPosted >= 2
+          && round3Holes === 0
+        const isMissedCut = isMissedCutByStatus || isMissedCutByScore
 
         const madeCutAtWithdrawal =
           isWithdrawn
@@ -269,7 +282,7 @@ function GolfPoolPage() {
 
     const getEffectiveScore = (name: string) => {
       const raw = golferScores[name]
-      if (!raw || raw.topar === null || raw.topar === undefined) {
+      if (!raw) {
         return { topar: null as number | null, mc: false, wd: false, wdAfterCut: false }
       }
 
@@ -302,6 +315,10 @@ function GolfPoolPage() {
           wdAfterCut: false,
           missedBy,
         }
+      }
+
+      if (raw.topar === null || raw.topar === undefined) {
+        return { topar: null as number | null, mc: false, wd: false, wdAfterCut: false }
       }
 
       return {
