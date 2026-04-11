@@ -24,6 +24,8 @@ type TabName = 'leaderboard' | 'enter' | 'scores' | 'admin'
 type LiveScore = {
   topar: number | null
   mc: boolean
+  wd: boolean
+  wdAfterCut: boolean
   mcR1R2Topar: number | null
   thru: string | null
 }
@@ -35,6 +37,7 @@ type ApiState = {
 }
 
 const WINNER_BONUS = -10
+const EXACT_WINNER_BONUS = -5
 const TOURNAMENT_START = new Date('2026-04-09T07:00:00-04:00')
 const TOURNAMENT_END = new Date('2026-04-12T20:00:00-04:00')
 const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD ?? 'CokeZero2026$'
@@ -50,6 +53,7 @@ function GolfPoolPage() {
   const [entryName, setEntryName] = useState('')
   const [entryTiebreaker, setEntryTiebreaker] = useState('')
   const [entryPicks, setEntryPicks] = useState(['', '', '', ''])
+  const [entryWinnerPick, setEntryWinnerPick] = useState('')
   const [entryMessage, setEntryMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null)
   const [entrySubmitting, setEntrySubmitting] = useState(false)
 
@@ -74,8 +78,9 @@ function GolfPoolPage() {
       && uniqueCount === filledPicks.length
       && top5Count <= 1
       && tbValid
+      && filledPicks.includes(entryWinnerPick)
     )
-  }, [entryName, entryPicks, entryTiebreaker, settings.picksOpen])
+  }, [entryName, entryPicks, entryTiebreaker, entryWinnerPick, settings.picksOpen])
 
   const pickValidationError = useMemo(() => {
     const filledPicks = entryPicks.filter(Boolean)
@@ -84,8 +89,11 @@ function GolfPoolPage() {
 
     if (top5Count > 1) return 'You can only pick 1 golfer from the Top 5.'
     if (uniqueCount < filledPicks.length) return 'You picked the same golfer twice.'
+    if (filledPicks.length === 4 && !filledPicks.includes(entryWinnerPick)) {
+      return 'Select one of your 4 picks as your winning golfer for the exact winner bonus.'
+    }
     return null
-  }, [entryPicks])
+  }, [entryPicks, entryWinnerPick])
 
   const loadPoolState = useCallback(async () => {
     const response = await fetch('/api/pool', { cache: 'no-store' })
@@ -138,15 +146,43 @@ function GolfPoolPage() {
         if (!resolvedName) continue
 
         const statusName = competitor.status?.type?.name ?? ''
-        const isMissedCut = statusName === 'STATUS_MISSED_CUT' || statusName === 'STATUS_CUT'
+        const statusDisplay = (competitor.status?.displayValue ?? '').toUpperCase()
+        const isWithdrawn =
+          statusName === 'STATUS_WITHDRAWN'
+          || statusName === 'STATUS_WD'
+          || statusDisplay.includes('WITHDRAW')
+          || /\bWD\b/.test(statusDisplay)
         const toPar = parseTopar(competitor.score)
+        const lineScores = competitor.linescores ?? []
+        const roundsPosted = (competitor.linescores ?? []).reduce((count, round) => {
+          const hasRoundTopar = parseTopar(round.displayValue) !== null
+          const hasHoleData = Array.isArray(round.linescores) && round.linescores.length > 0
+          return count + (hasRoundTopar || hasHoleData ? 1 : 0)
+        }, 0)
 
         let mcR1R2Topar: number | null = null
-        if (isMissedCut && (competitor.linescores?.length ?? 0) >= 2) {
-          const r1 = parseTopar(competitor.linescores?.[0]?.displayValue)
-          const r2 = parseTopar(competitor.linescores?.[1]?.displayValue)
+        if (lineScores.length >= 2) {
+          const r1 = parseTopar(lineScores[0]?.displayValue)
+          const r2 = parseTopar(lineScores[1]?.displayValue)
           mcR1R2Topar = r1 !== null && r2 !== null ? r1 + r2 : toPar
         }
+        const round3Holes = Array.isArray(lineScores[2]?.linescores) ? lineScores[2].linescores.length : 0
+        const isMissedCutByStatus =
+          statusName === 'STATUS_MISSED_CUT'
+          || statusName === 'STATUS_CUT'
+          || /\bMC\b/.test(statusDisplay)
+          || statusDisplay.includes('MISSED CUT')
+        const isMissedCutByScore =
+          !isWithdrawn
+          && mcR1R2Topar !== null
+          && mcR1R2Topar > settings.cutLine
+          && roundsPosted >= 2
+          && round3Holes === 0
+        const isMissedCut = isMissedCutByStatus || isMissedCutByScore
+
+        const madeCutAtWithdrawal =
+          isWithdrawn
+          && ((mcR1R2Topar !== null && mcR1R2Topar <= settings.cutLine) || roundsPosted >= 3)
 
         let thru = competitor.status?.displayValue ?? null
         if (competitor.linescores?.length) {
@@ -162,7 +198,9 @@ function GolfPoolPage() {
 
         nextScores[resolvedName] = {
           topar: toPar,
-          mc: isMissedCut,
+          mc: isMissedCut || (isWithdrawn && !madeCutAtWithdrawal),
+          wd: isWithdrawn,
+          wdAfterCut: madeCutAtWithdrawal,
           mcR1R2Topar,
           thru,
         }
@@ -180,6 +218,8 @@ function GolfPoolPage() {
         fallbackScores[golfer] = {
           topar: score.topar,
           mc: score.mc,
+          wd: Boolean(score.wd),
+          wdAfterCut: Boolean(score.wdAfterCut),
           mcR1R2Topar: null,
           thru: null,
         }
@@ -189,7 +229,7 @@ function GolfPoolPage() {
       setGolferScores(fallbackScores)
       setLastUpdated(`Updated: ${new Date().toLocaleTimeString()} · manual override`)
     }
-  }, [])
+  }, [settings.cutLine])
 
   const loadAll = useCallback(async () => {
     const state = await loadPoolState()
@@ -222,56 +262,96 @@ function GolfPoolPage() {
       draft[golfer] = {
         topar: source?.topar ?? null,
         mc: Boolean(source?.mc),
+        wd: Boolean(source?.wd),
+        wdAfterCut: Boolean(source?.wdAfterCut),
       }
     }
     setAdminScoresDraft(draft)
   }, [golferScores])
 
-  const getEffectiveScore = useCallback((name: string) => {
-    const raw = golferScores[name]
-    if (!raw || raw.topar === null || raw.topar === undefined) {
-      return { topar: null as number | null, mc: false }
-    }
+  const leaderboardData = useMemo(() => {
+    const allTopars = Object.values(golferScores)
+      .filter((score) => score.topar !== null)
+      .map((score) => score.topar as number)
+    const madeCutTopars = Object.values(golferScores)
+      .filter((score) => !score.mc && score.topar !== null)
+      .map((score) => score.topar as number)
 
-    if (raw.mc) {
-      const madeCutScores = Object.values(golferScores)
-        .filter((score) => !score.mc && score.topar !== null)
-        .map((score) => score.topar as number)
+    const worstPoolScore = allTopars.length > 0 ? Math.max(...allTopars) : settings.cutLine
+    const worstMadeCutScore = madeCutTopars.length > 0 ? Math.max(...madeCutTopars) : settings.cutLine
 
-      const worstMadeCut = madeCutScores.length > 0 ? Math.max(...madeCutScores) : settings.cutLine
-      const firstTwoRounds = raw.mcR1R2Topar !== null ? raw.mcR1R2Topar : raw.topar
-      const missedBy = firstTwoRounds !== null ? Math.max(0, firstTwoRounds - settings.cutLine) : 1
+    const getEffectiveScore = (name: string) => {
+      const raw = golferScores[name]
+      if (!raw) {
+        return { topar: null as number | null, mc: false, wd: false, wdAfterCut: false }
+      }
+
+      if (raw.wd && raw.wdAfterCut) {
+        return {
+          topar: worstMadeCutScore,
+          mc: false,
+          wd: true,
+          wdAfterCut: true,
+        }
+      }
+
+      if (raw.wd && !raw.wdAfterCut) {
+        return {
+          topar: worstPoolScore + 1,
+          mc: true,
+          wd: true,
+          wdAfterCut: false,
+        }
+      }
+
+      if (raw.mc) {
+        const firstTwoRounds = raw.mcR1R2Topar !== null ? raw.mcR1R2Topar : raw.topar
+        const missedBy = firstTwoRounds !== null ? Math.max(0, firstTwoRounds - settings.cutLine) : 1
+
+        return {
+          topar: worstMadeCutScore + missedBy,
+          mc: true,
+          wd: false,
+          wdAfterCut: false,
+          missedBy,
+        }
+      }
+
+      if (raw.topar === null || raw.topar === undefined) {
+        return { topar: null as number | null, mc: false, wd: false, wdAfterCut: false }
+      }
 
       return {
-        topar: worstMadeCut + missedBy,
-        mc: true,
-        missedBy,
+        topar: raw.topar,
+        mc: false,
+        wd: false,
+        wdAfterCut: false,
       }
     }
 
-    return {
-      topar: raw.topar,
-      mc: false,
-    }
-  }, [golferScores, settings.cutLine])
-
-  const leaderboardData = useMemo(() => {
     const scoredEntries = entries.map((entry) => {
       const picks = [entry.pick1, entry.pick2, entry.pick3, entry.pick4]
       const hasWinnerPick = Boolean(settings.tournamentWinner && picks.includes(settings.tournamentWinner))
+      const hasExactWinnerPick = Boolean(
+        settings.tournamentWinner && entry.winnerPick && entry.winnerPick === settings.tournamentWinner,
+      )
 
       let total = 0
       let allScored = true
 
       const details = picks.map((pickName) => {
         const effective = getEffectiveScore(pickName)
+        const rawTopar = golferScores[pickName]?.topar ?? null
         if (effective.topar === null) allScored = false
         total += effective.topar ?? 0
 
         return {
           name: pickName,
           topar: effective.topar,
+          rawTopar,
           mc: effective.mc,
+          wd: effective.wd,
+          wdAfterCut: effective.wdAfterCut,
           thru: golferScores[pickName]?.thru ?? null,
           isTop5: TOP5.includes(pickName as (typeof TOP5)[number]),
           isWinner: settings.tournamentWinner === pickName,
@@ -281,6 +361,14 @@ function GolfPoolPage() {
       if (allScored && hasWinnerPick) {
         total += WINNER_BONUS
       }
+      if (allScored && hasExactWinnerPick) {
+        total += EXACT_WINNER_BONUS
+      }
+
+      const alternateScores = details
+        .filter((detail) => detail.name !== settings.tournamentWinner && detail.topar !== null)
+        .map((detail) => detail.topar as number)
+      const lowestAlternate = alternateScores.length > 0 ? Math.min(...alternateScores) : null
 
       return {
         ...entry,
@@ -288,6 +376,8 @@ function GolfPoolPage() {
         allScored,
         total: allScored ? total : null,
         hasWinnerPick,
+        hasExactWinnerPick,
+        lowestAlternate,
       }
     })
 
@@ -304,7 +394,13 @@ function GolfPoolPage() {
       if (winnerScore !== null && winnerScore !== undefined) {
         const aDistance = Math.abs((a.tiebreaker ?? 9999) - winnerScore)
         const bDistance = Math.abs((b.tiebreaker ?? 9999) - winnerScore)
-        return aDistance - bDistance
+        if (aDistance !== bDistance) return aDistance - bDistance
+      }
+
+      const aAlt = a.lowestAlternate ?? 9999
+      const bAlt = b.lowestAlternate ?? 9999
+      if (aAlt !== bAlt) {
+        return aAlt - bAlt
       }
       return 0
     })
@@ -316,7 +412,7 @@ function GolfPoolPage() {
       winnerScore,
       topTied: ready.length > 1 && ready[0].total === ready[1].total,
     }
-  }, [entries, getEffectiveScore, golferScores, settings.tournamentWinner])
+  }, [entries, golferScores, settings.cutLine, settings.tournamentWinner])
 
   const submitEntry = useCallback(async () => {
     if (!canSubmitEntry || !settings.picksOpen || entrySubmitting) return
@@ -336,6 +432,7 @@ function GolfPoolPage() {
             pick2: entryPicks[1],
             pick3: entryPicks[2],
             pick4: entryPicks[3],
+            winnerPick: entryWinnerPick,
             tiebreaker: Number.parseInt(entryTiebreaker.trim(), 10),
           },
         }),
@@ -359,7 +456,7 @@ function GolfPoolPage() {
     } finally {
       setEntrySubmitting(false)
     }
-  }, [canSubmitEntry, entryName, entryPicks, entrySubmitting, entryTiebreaker, loadAll, settings.picksOpen])
+  }, [canSubmitEntry, entryName, entryPicks, entrySubmitting, entryTiebreaker, entryWinnerPick, loadAll, settings.picksOpen])
 
   const saveSettings = useCallback(async (updates: Partial<PoolSettings>) => {
     setAdminSettingsMessage(null)
@@ -530,7 +627,7 @@ function GolfPoolPage() {
 
                 {settings.tournamentWinner ? (
                   <div className="winner-banner">
-                    🏆 <strong>Masters Champion: {settings.tournamentWinner}</strong> - Anyone who picked them receives a <strong>-10 stroke bonus</strong>.
+                    🏆 <strong>Masters Champion: {settings.tournamentWinner}</strong> - entries with this golfer receive <strong>-10</strong>, plus <strong>-5</strong> more if this was their selected winner pick.
                   </div>
                 ) : null}
 
@@ -570,10 +667,23 @@ function GolfPoolPage() {
                                   return (
                                     <span
                                       key={`${entry.id}-${detail.name}`}
-                                      className={`pick-chip ${detail.isWinner ? 'winner-pick' : detail.mc ? 'mc' : detail.isTop5 ? 'top5' : ''}`}
+                                      className={`pick-chip ${detail.isWinner ? 'winner-pick' : detail.mc || detail.wd ? 'mc' : detail.isTop5 ? 'top5' : ''}`}
                                     >
                                       {detail.name}
-                                      {detail.mc ? ' MC' : `${scorePart}${detail.isWinner ? ' 🏆' : ''}`}
+                                      {detail.wd
+                                        ? detail.wdAfterCut
+                                          ? ` WD (R3-4) (${fmtTopar(detail.topar)})`
+                                          : ` WD/MC (${fmtTopar(detail.topar)})`
+                                        : detail.mc
+                                          ? (
+                                            <>
+                                              {' MC '}
+                                              {detail.rawTopar !== null ? `(${fmtTopar(detail.rawTopar)})` : '(—)'}
+                                              {' '}
+                                              <span className="mc-used-score">{fmtTopar(detail.topar)}</span>
+                                            </>
+                                          )
+                                          : `${scorePart}${detail.isWinner ? ' 🏆' : ''}`}
                                     </span>
                                   )
                                 })}
@@ -581,6 +691,9 @@ function GolfPoolPage() {
 
                               {entry.hasWinnerPick ? (
                                 <div className="winner-bonus-note">✅ Winner bonus -10 applied</div>
+                              ) : null}
+                              {entry.hasExactWinnerPick ? (
+                                <div className="winner-bonus-note">✅ Exact winner bonus -5 applied</div>
                               ) : null}
 
                               {leaderboardData.topTied
@@ -590,6 +703,9 @@ function GolfPoolPage() {
                                   🎯 Tiebreaker: {fmtTopar(entry.tiebreaker)}
                                   {leaderboardData.winnerScore !== null
                                     ? ` · actual: ${fmtTopar(leaderboardData.winnerScore)}, off by ${Math.abs(entry.tiebreaker - leaderboardData.winnerScore)}`
+                                    : ''}
+                                  {entry.lowestAlternate !== null
+                                    ? ` · 2nd TB (lowest alternate): ${fmtTopar(entry.lowestAlternate)}`
                                     : ''}
                                 </div>
                               ) : null}
@@ -660,13 +776,17 @@ function GolfPoolPage() {
                   <strong>📋 Pool Rules</strong>
                   <ul>
                     <li>Pick 4 golfers - lowest combined to-par score wins</li>
-                    <li>Payout: $2 per stroke difference vs. the winner</li>
+                    <li>Payout: winner collects $1 per stroke from each other entry</li>
                     <li>Only 1 pick allowed from the Top 5 (OWGR)</li>
                     <li>Missed cut penalty: worst made-cut score + strokes missed by</li>
                     <li>
-                      <strong>🏆 Winner bonus: -10 strokes if one of your picks wins the Masters</strong>
+                      WD in rounds 1-2 counts as missed cut and scores worst pool score + 1
                     </li>
-                    <li>Tiebreaker: closest guess to the winning score (to par) - used only if tied</li>
+                    <li>WD after making cut (rounds 3-4): assigned highest made-cut score</li>
+                    <li><strong>🏆 Winner bonus: -10 if champion is in your 4 picks</strong></li>
+                    <li><strong>🎯 Exact winner bonus: extra -5 if your chosen winner pick is champion</strong></li>
+                    <li>Tiebreaker 1: closest to winner final score (to par)</li>
+                    <li>Tiebreaker 2: lowest alternate golfer score</li>
                   </ul>
                 </div>
 
@@ -701,6 +821,9 @@ function GolfPoolPage() {
                           const next = [...entryPicks]
                           next[index] = event.target.value
                           setEntryPicks(next)
+                          if (!next.includes(entryWinnerPick)) {
+                            setEntryWinnerPick('')
+                          }
                         }}
                       >
                         <option value="">- select golfer -</option>
@@ -722,8 +845,25 @@ function GolfPoolPage() {
                   </div>
                 ))}
 
+                <div className="form-group">
+                  <label className="form-label" htmlFor="winner-pick">🏆 Winning Golfer Pick (for + bonus)</label>
+                  <select
+                    id="winner-pick"
+                    value={entryWinnerPick}
+                    onChange={(event) => setEntryWinnerPick(event.target.value)}
+                  >
+                    <option value="">- select one of your 4 picks -</option>
+                    {entryPicks.filter(Boolean).map((name) => (
+                      <option key={`winner-pick-${name}`} value={name}>{name}</option>
+                    ))}
+                  </select>
+                  <div className="form-hint">
+                    If this selected golfer wins, your entry receives an additional -5 strokes.
+                  </div>
+                </div>
+
                 <div className="form-group tiebreaker-group">
-                  <label className="form-label" htmlFor="tiebreaker">🎯 Tiebreaker - Winning score (to par)</label>
+                  <label className="form-label" htmlFor="tiebreaker">🎯 Tiebreaker - Winner final score (to par)</label>
                   <input
                     id="tiebreaker"
                     type="number"
@@ -735,7 +875,7 @@ function GolfPoolPage() {
                     className="tiebreaker-input"
                   />
                   <div className="form-hint">
-                    Guess the Masters winner&apos;s final score vs. par (e.g. -17). Only used to break a tie.
+                    Guess the champion&apos;s final score (e.g. -12). This is the first tiebreaker.
                   </div>
                 </div>
 
@@ -768,7 +908,7 @@ function GolfPoolPage() {
               <h2>📊 Live Golfer Scores</h2>
               <p className="scores-help">
                 Scores shown as strokes relative to par (E = even, -3 = 3 under, +2 = 2 over).
-                Missed cut players shown with penalty. Updates automatically.
+                Missed cut and withdrawal penalties are applied automatically.
               </p>
 
               {!tournamentLive && Object.keys(golferScores).length === 0 ? (
@@ -791,6 +931,7 @@ function GolfPoolPage() {
                       const toPar = score?.topar ?? null
                       const hole = score?.thru ? parseHole(score.thru) : null
                       const missedCut = Boolean(score?.mc)
+                      const withdrew = Boolean(score?.wd)
                       const champion = settings.tournamentWinner === name
                       const isTop5 = TOP5.includes(name as (typeof TOP5)[number])
 
@@ -806,7 +947,7 @@ function GolfPoolPage() {
                             {toPar !== null ? fmtTopar(toPar) : '—'}
                           </div>
                           <div className="center">
-                            {missedCut ? (
+                            {missedCut || withdrew ? (
                               <span className="hole-muted">—</span>
                             ) : hole === 'F' ? (
                               <span className="hole-final">F</span>
@@ -819,6 +960,8 @@ function GolfPoolPage() {
                           <div className="center">
                             {missedCut ? (
                               <span className="badge badge-red">MC</span>
+                            ) : withdrew ? (
+                              <span className="badge badge-red">WD</span>
                             ) : champion ? (
                               <span className="badge badge-champion">🏆 WON</span>
                             ) : toPar !== null ? (
@@ -941,7 +1084,7 @@ function GolfPoolPage() {
                   <div className="settings-block no-border">
                     <div className="toggle-label">🏆 Masters Champion</div>
                     <div className="toggle-sublabel settings-help">
-                      Set once the winner is confirmed. Applies -10 stroke bonus to anyone who picked them.
+                      Set once the winner is confirmed. Applies -10 if in an entry and -5 more if it matches that entry's winner pick.
                     </div>
                     <div className="settings-row">
                       <select
@@ -981,7 +1124,7 @@ function GolfPoolPage() {
                     </div>
                     {settings.tournamentWinner ? (
                       <div className="winner-current">
-                        ✅ Champion: {settings.tournamentWinner} - -10 bonus applied to anyone who picked them
+                        ✅ Champion: {settings.tournamentWinner} - -10 for inclusion and -5 for exact winner pick
                       </div>
                     ) : null}
                   </div>
@@ -1002,7 +1145,12 @@ function GolfPoolPage() {
 
                   {FIELD.map((name) => {
                     const key = safeId(name)
-                    const score = adminScoresDraft[name] ?? { topar: null, mc: false }
+                    const score = adminScoresDraft[name] ?? {
+                      topar: null,
+                      mc: false,
+                      wd: false,
+                      wdAfterCut: false,
+                    }
 
                     return (
                       <div key={`admin-score-${key}`} className="admin-grid">
@@ -1021,6 +1169,8 @@ function GolfPoolPage() {
                                 ...current[name],
                                 topar: value === '' ? null : Number.parseInt(value, 10),
                                 mc: current[name]?.mc ?? false,
+                                wd: current[name]?.wd ?? false,
+                                wdAfterCut: current[name]?.wdAfterCut ?? false,
                               },
                             }))
                           }}
@@ -1036,11 +1186,52 @@ function GolfPoolPage() {
                                   ...current[name],
                                   mc: event.target.checked,
                                   topar: current[name]?.topar ?? null,
+                                  wd: event.target.checked ? false : (current[name]?.wd ?? false),
+                                  wdAfterCut: event.target.checked ? false : (current[name]?.wdAfterCut ?? false),
                                 },
                               }))
                             }}
                           />
                           MC
+                        </label>
+                        <label className="mc-label">
+                          <input
+                            type="checkbox"
+                            checked={score.wd}
+                            onChange={(event) => {
+                              setAdminScoresDraft((current) => ({
+                                ...current,
+                                [name]: {
+                                  ...current[name],
+                                  wd: event.target.checked,
+                                  mc: event.target.checked ? false : (current[name]?.mc ?? false),
+                                  wdAfterCut: event.target.checked ? (current[name]?.wdAfterCut ?? false) : false,
+                                  topar: current[name]?.topar ?? null,
+                                },
+                              }))
+                            }}
+                          />
+                          WD
+                        </label>
+                        <label className="mc-label">
+                          <input
+                            type="checkbox"
+                            checked={score.wdAfterCut}
+                            disabled={!score.wd}
+                            onChange={(event) => {
+                              setAdminScoresDraft((current) => ({
+                                ...current,
+                                [name]: {
+                                  ...current[name],
+                                  wdAfterCut: event.target.checked,
+                                  wd: true,
+                                  mc: false,
+                                  topar: current[name]?.topar ?? null,
+                                },
+                              }))
+                            }}
+                          />
+                          WD after cut
                         </label>
                       </div>
                     )
@@ -1070,6 +1261,7 @@ function GolfPoolPage() {
                         <div>
                           <div className="entry-row-name">{entry.name}</div>
                           <div className="entry-row-picks">{[entry.pick1, entry.pick2, entry.pick3, entry.pick4].join(' · ')}</div>
+                          <div className="entry-row-tb">🏆 Winner pick: {entry.winnerPick ?? '—'}</div>
                           <div className="entry-row-tb">🎯 Tiebreaker: {entry.tiebreaker !== null ? fmtTopar(entry.tiebreaker) : '—'}</div>
                         </div>
                         <button

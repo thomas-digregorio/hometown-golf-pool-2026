@@ -75,12 +75,20 @@ export const Route = createFileRoute('/api/pool')({
                 ...current,
                 ...body.entry,
                 name: normalizedName,
+                winnerPick:
+                  typeof body.entry.winnerPick === 'string' && body.entry.winnerPick.length > 0
+                    ? body.entry.winnerPick
+                    : null,
               }
             } else {
               entries.push({
                 ...body.entry,
                 id: crypto.randomUUID(),
                 name: normalizedName,
+                winnerPick:
+                  typeof body.entry.winnerPick === 'string' && body.entry.winnerPick.length > 0
+                    ? body.entry.winnerPick
+                    : null,
                 createdAt: new Date().toISOString(),
               })
             }
@@ -117,6 +125,8 @@ export const Route = createFileRoute('/api/pool')({
                     ? null
                     : Number(score.topar),
                 mc: Boolean(score.mc),
+                wd: Boolean(score.wd),
+                wdAfterCut: Boolean(score.wdAfterCut),
               }
             }
 
@@ -153,6 +163,18 @@ async function getEntries(): Promise<Entry[]> {
 
   return entries
     .filter((entry): entry is Entry => Boolean(entry && typeof entry === 'object'))
+    .map((entry) => {
+      const picks = [entry.pick1, entry.pick2, entry.pick3, entry.pick4]
+      const winnerPick =
+        typeof (entry as Partial<Entry>).winnerPick === 'string'
+          ? (entry as Partial<Entry>).winnerPick ?? null
+          : null
+
+      return {
+        ...entry,
+        winnerPick: winnerPick && picks.includes(winnerPick) ? winnerPick : null,
+      }
+    })
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 }
 
@@ -198,6 +220,8 @@ async function getManualScores(): Promise<Record<string, ManualScore>> {
           ? null
           : Number(rawScore.topar),
       mc: Boolean(rawScore.mc),
+      wd: Boolean(rawScore.wd),
+      wdAfterCut: Boolean(rawScore.wdAfterCut),
     }
   }
 
