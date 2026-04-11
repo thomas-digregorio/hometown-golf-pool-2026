@@ -5,6 +5,7 @@ export type Entry = {
   pick2: string
   pick3: string
   pick4: string
+  winnerPick: string | null
   tiebreaker: number | null
   createdAt: string
 }
@@ -18,6 +19,8 @@ export type PoolSettings = {
 export type ManualScore = {
   topar: number | null
   mc: boolean
+  wd: boolean
+  wdAfterCut: boolean
 }
 
 type SeedEntryInput = {
@@ -272,33 +275,34 @@ export const SEEDED_ENTRIES: Entry[] = SEEDED_ENTRY_INPUTS.map((entry, index) =>
   pick2: entry.picks[1],
   pick3: entry.picks[2],
   pick4: entry.picks[3],
+  winnerPick: entry.picks[0],
   tiebreaker: entry.tiebreaker,
   createdAt: new Date(Date.UTC(2026, 3, 8, 12, index)).toISOString(),
 }))
 
 export const SEEDED_MANUAL_SCORES: Record<string, ManualScore> = {
-  'Scottie Scheffler': { topar: -2, mc: false },
-  'Rory McIlroy': { topar: -6, mc: false },
-  'Bryson DeChambeau': { topar: 5, mc: false },
-  'Jon Rahm': { topar: 4, mc: false },
-  'Xander Schauffele': { topar: -2, mc: false },
-  'Robert MacIntyre': { topar: 7, mc: false },
-  'Matt Fitzpatrick': { topar: 2, mc: false },
-  'Ludvig Åberg': { topar: 1, mc: false },
-  'Tommy Fleetwood': { topar: -1, mc: false },
-  'Cameron Young': { topar: 1, mc: false },
-  'Hideki Matsuyama': { topar: 1, mc: false },
-  'Patrick Reed': { topar: -3, mc: false },
-  'Jordan Spieth': { topar: 0, mc: false },
-  'Corey Conners': { topar: 2, mc: false },
-  'Russell Henley': { topar: 1, mc: false },
-  'Akshay Bhatia': { topar: 0, mc: false },
-  'Min Woo Lee': { topar: 11, mc: false },
-  'Collin Morikawa': { topar: 2, mc: false },
-  'J.J. Spaun': { topar: 6, mc: false },
-  'Si Woo Kim': { topar: 4, mc: false },
-  'Chris Gotterup': { topar: -2, mc: false },
-  'Justin Rose': { topar: -4, mc: false },
-  'Jacob Bridgeman': { topar: 1, mc: false },
-  'Haotong Li': { topar: 0, mc: false },
+  'Scottie Scheffler': { topar: -2, mc: false, wd: false, wdAfterCut: false },
+  'Rory McIlroy': { topar: -6, mc: false, wd: false, wdAfterCut: false },
+  'Bryson DeChambeau': { topar: 5, mc: false, wd: false, wdAfterCut: false },
+  'Jon Rahm': { topar: 4, mc: false, wd: false, wdAfterCut: false },
+  'Xander Schauffele': { topar: -2, mc: false, wd: false, wdAfterCut: false },
+  'Robert MacIntyre': { topar: 7, mc: false, wd: false, wdAfterCut: false },
+  'Matt Fitzpatrick': { topar: 2, mc: false, wd: false, wdAfterCut: false },
+  'Ludvig Åberg': { topar: 1, mc: false, wd: false, wdAfterCut: false },
+  'Tommy Fleetwood': { topar: -1, mc: false, wd: false, wdAfterCut: false },
+  'Cameron Young': { topar: 1, mc: false, wd: false, wdAfterCut: false },
+  'Hideki Matsuyama': { topar: 1, mc: false, wd: false, wdAfterCut: false },
+  'Patrick Reed': { topar: -3, mc: false, wd: false, wdAfterCut: false },
+  'Jordan Spieth': { topar: 0, mc: false, wd: false, wdAfterCut: false },
+  'Corey Conners': { topar: 2, mc: false, wd: false, wdAfterCut: false },
+  'Russell Henley': { topar: 1, mc: false, wd: false, wdAfterCut: false },
+  'Akshay Bhatia': { topar: 0, mc: false, wd: false, wdAfterCut: false },
+  'Min Woo Lee': { topar: 11, mc: false, wd: false, wdAfterCut: false },
+  'Collin Morikawa': { topar: 2, mc: false, wd: false, wdAfterCut: false },
+  'J.J. Spaun': { topar: 6, mc: false, wd: false, wdAfterCut: false },
+  'Si Woo Kim': { topar: 4, mc: false, wd: false, wdAfterCut: false },
+  'Chris Gotterup': { topar: -2, mc: false, wd: false, wdAfterCut: false },
+  'Justin Rose': { topar: -4, mc: false, wd: false, wdAfterCut: false },
+  'Jacob Bridgeman': { topar: 1, mc: false, wd: false, wdAfterCut: false },
+  'Haotong Li': { topar: 0, mc: false, wd: false, wdAfterCut: false },
 }
