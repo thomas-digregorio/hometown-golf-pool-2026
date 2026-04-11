@@ -446,8 +446,16 @@ select:focus {
 .pick-chip.mc {
   background: var(--red-light);
   border-color: #f5b8b3;
+  color: var(--text);
+}
+
+.pick-chip .mc-actual {
+  color: var(--text-muted);
+}
+
+.pick-chip .mc-penalty {
   color: var(--red);
-  text-decoration: line-through;
+  font-weight: 700;
 }
 
 .pick-chip.winner-pick {

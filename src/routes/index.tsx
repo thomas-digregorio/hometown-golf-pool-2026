@@ -28,6 +28,19 @@ type LiveScore = {
   thru: string | null
 }
 
+type EspnRound = {
+  period?: number
+  displayValue?: string
+  linescores?: Array<unknown>
+}
+
+type EspnCompetitor = {
+  athlete?: { displayName?: string }
+  status?: { displayValue?: string; type?: { name?: string } }
+  score?: string
+  linescores?: EspnRound[]
+}
+
 type ApiState = {
   entries: Entry[]
   settings: PoolSettings
@@ -112,12 +125,8 @@ function GolfPoolPage() {
           shortName?: string
           slug?: string
           competitions?: Array<{
-            competitors?: Array<{
-              athlete?: { displayName?: string }
-              status?: { displayValue?: string; type?: { name?: string } }
-              score?: string
-              linescores?: Array<{ displayValue?: string; linescores?: Array<unknown> }>
-            }>
+            status?: { period?: number }
+            competitors?: EspnCompetitor[]
           }>
         }>
       }
@@ -128,6 +137,7 @@ function GolfPoolPage() {
       })
 
       const competitors = mastersEvent?.competitions?.[0]?.competitors ?? []
+      const eventPeriod = mastersEvent?.competitions?.[0]?.status?.period ?? 0
       if (competitors.length === 0) {
         throw new Error('No live competitors')
       }
@@ -138,17 +148,12 @@ function GolfPoolPage() {
         if (!resolvedName) continue
 
         const statusName = competitor.status?.type?.name ?? ''
-        const isMissedCut = statusName === 'STATUS_MISSED_CUT' || statusName === 'STATUS_CUT'
+        const statusDisplay = competitor.status?.displayValue ?? ''
         const toPar = parseTopar(competitor.score)
+        const isMissedCut = isMissedCutStatus(statusName, statusDisplay)
+          || inferMissedCutFromLinescores(competitor, eventPeriod, toPar, settings.cutLine)
 
-        let mcR1R2Topar: number | null = null
-        if (isMissedCut && (competitor.linescores?.length ?? 0) >= 2) {
-          const r1 = parseTopar(competitor.linescores?.[0]?.displayValue)
-          const r2 = parseTopar(competitor.linescores?.[1]?.displayValue)
-          mcR1R2Topar = r1 !== null && r2 !== null ? r1 + r2 : toPar
-        }
-
-        let thru = competitor.status?.displayValue ?? null
+        let thru = statusDisplay || null
         if (competitor.linescores?.length) {
           for (let i = competitor.linescores.length - 1; i >= 0; i -= 1) {
             const holes = competitor.linescores[i]?.linescores
@@ -163,7 +168,7 @@ function GolfPoolPage() {
         nextScores[resolvedName] = {
           topar: toPar,
           mc: isMissedCut,
-          mcR1R2Topar,
+          mcR1R2Topar: null,
           thru,
         }
       }
@@ -189,7 +194,7 @@ function GolfPoolPage() {
       setGolferScores(fallbackScores)
       setLastUpdated(`Updated: ${new Date().toLocaleTimeString()} · manual override`)
     }
-  }, [])
+  }, [settings.cutLine])
 
   const loadAll = useCallback(async () => {
     const state = await loadPoolState()
@@ -229,7 +234,7 @@ function GolfPoolPage() {
 
   const getEffectiveScore = useCallback((name: string) => {
     const raw = golferScores[name]
-    if (!raw || raw.topar === null || raw.topar === undefined) {
+    if (!raw) {
       return { topar: null as number | null, mc: false }
     }
 
@@ -239,14 +244,17 @@ function GolfPoolPage() {
         .map((score) => score.topar as number)
 
       const worstMadeCut = madeCutScores.length > 0 ? Math.max(...madeCutScores) : settings.cutLine
-      const firstTwoRounds = raw.mcR1R2Topar !== null ? raw.mcR1R2Topar : raw.topar
-      const missedBy = firstTwoRounds !== null ? Math.max(0, firstTwoRounds - settings.cutLine) : 1
+      const missedBy = raw.topar !== null && raw.topar !== undefined ? Math.max(0, raw.topar - settings.cutLine) : 1
 
       return {
         topar: worstMadeCut + missedBy,
         mc: true,
         missedBy,
       }
+    }
+
+    if (raw.topar === null || raw.topar === undefined) {
+      return { topar: null as number | null, mc: false }
     }
 
     return {
@@ -272,6 +280,7 @@ function GolfPoolPage() {
           name: pickName,
           topar: effective.topar,
           mc: effective.mc,
+          rawTopar: golferScores[pickName]?.topar ?? null,
           thru: golferScores[pickName]?.thru ?? null,
           isTop5: TOP5.includes(pickName as (typeof TOP5)[number]),
           isWinner: settings.tournamentWinner === pickName,
@@ -566,14 +575,28 @@ function GolfPoolPage() {
                                   const holeString = detail.thru ? parseHole(detail.thru) : null
                                   const holePart = holeString && holeString !== 'F' && !detail.mc ? ` / ${holeString}` : ''
                                   const scorePart = detail.topar !== null ? ` (${fmtTopar(detail.topar)}${holePart})` : ''
+                                  const mcActualPart = detail.rawTopar !== null ? fmtTopar(detail.rawTopar) : '—'
+                                  const mcPenaltyPart = detail.topar !== null ? fmtPenalty(detail.topar) : '—'
 
                                   return (
                                     <span
                                       key={`${entry.id}-${detail.name}`}
                                       className={`pick-chip ${detail.isWinner ? 'winner-pick' : detail.mc ? 'mc' : detail.isTop5 ? 'top5' : ''}`}
                                     >
-                                      {detail.name}
-                                      {detail.mc ? ' MC' : `${scorePart}${detail.isWinner ? ' 🏆' : ''}`}
+                                      {detail.mc ? (
+                                        <>
+                                          {detail.name}
+                                          {' '}
+                                          <span className="mc-actual">({mcActualPart})</span>
+                                          {' '}
+                                          <span className="mc-penalty">{mcPenaltyPart}</span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          {detail.name}
+                                          {`${scorePart}${detail.isWinner ? ' 🏆' : ''}`}
+                                        </>
+                                      )}
                                     </span>
                                   )
                                 })}
@@ -659,14 +682,27 @@ function GolfPoolPage() {
                 <div className="rules-notice">
                   <strong>📋 Pool Rules</strong>
                   <ul>
-                    <li>Pick 4 golfers - lowest combined to-par score wins</li>
-                    <li>Payout: $2 per stroke difference vs. the winner</li>
-                    <li>Only 1 pick allowed from the Top 5 (OWGR)</li>
-                    <li>Missed cut penalty: worst made-cut score + strokes missed by</li>
                     <li>
-                      <strong>🏆 Winner bonus: -10 strokes if one of your picks wins the Masters</strong>
+                      At the end of the tournament the scores of the 4 golfers will be added together and the entry with the lowest cumulative score receives $1/stroke from all of the other entrants.
                     </li>
-                    <li>Tiebreaker: closest guess to the winning score (to par) - used only if tied</li>
+                    <li>
+                      If a player misses the cut, he is assigned the worst score of any player in the field who made the cut plus the number of strokes by which he missed the cut by.
+                    </li>
+                    <li>
+                      If a player withdraws during the first 2 rounds, it will be counted as a missed cut and his score will be 1 higher than the worst score of any golfer in the pool.
+                    </li>
+                    <li>
+                      If a player makes the cut and withdraws in the 3rd or 4th round they will be assigned the highest score of any golfer in the pool who made the cut.
+                    </li>
+                    <li><strong>Bonus</strong></li>
+                    <li>If the winning golfer is part of your entry, your entry receives a bonus of -10 strokes.</li>
+                    <li>If you select the exact winning golfer (from your entry), your entry receives another bonus of -5 strokes.</li>
+                    <li><strong>Tiebreaker</strong></li>
+                    <li>
+                      Final cumulative score of the winning golfer (e.g Jon Rahm won the 2023 Masters with a final score of -12 or 276).
+                    </li>
+                    <li><strong>Second Tiebreaker</strong>: Lowest Alternate.</li>
+                    <li>Only 1 pick allowed from the Top 5 (OWGR).</li>
                   </ul>
                 </div>
 
@@ -785,12 +821,13 @@ function GolfPoolPage() {
                   <div className="sh center">Status</div>
 
                   {[...FIELD]
-                    .sort((a, b) => sortScores(a, b, golferScores))
+                    .sort((a, b) => sortScores(a, b, getEffectiveScore))
                     .map((name) => {
                       const score = golferScores[name]
-                      const toPar = score?.topar ?? null
+                      const effectiveScore = getEffectiveScore(name)
+                      const toPar = effectiveScore.topar
                       const hole = score?.thru ? parseHole(score.thru) : null
-                      const missedCut = Boolean(score?.mc)
+                      const missedCut = effectiveScore.mc
                       const champion = settings.tournamentWinner === name
                       const isTop5 = TOP5.includes(name as (typeof TOP5)[number])
 
@@ -1123,16 +1160,56 @@ function toparClass(value: number | null | undefined): string {
   return 'score-even'
 }
 
-function sortScores(a: string, b: string, scores: Record<string, LiveScore>): number {
-  const scoreA = scores[a]
-  const scoreB = scores[b]
+function fmtPenalty(value: number): string {
+  return value > 0 ? `+${value}` : String(value)
+}
 
-  const toParA = scoreA?.topar
-  const toParB = scoreB?.topar
+function sortScores(
+  a: string,
+  b: string,
+  getEffectiveScore: (name: string) => { topar: number | null; mc: boolean },
+): number {
+  const scoreA = getEffectiveScore(a)
+  const scoreB = getEffectiveScore(b)
+
+  const toParA = scoreA.topar
+  const toParB = scoreB.topar
 
   if (toParA === null || toParA === undefined) return 1
   if (toParB === null || toParB === undefined) return -1
-  if (scoreA?.mc && !scoreB?.mc) return 1
-  if (!scoreA?.mc && scoreB?.mc) return -1
+  if (scoreA.mc && !scoreB.mc) return 1
+  if (!scoreA.mc && scoreB.mc) return -1
   return toParA - toParB
+}
+
+function isMissedCutStatus(statusName: string, statusDisplay: string): boolean {
+  const normalizedName = statusName.toUpperCase()
+  if (normalizedName === 'STATUS_MISSED_CUT' || normalizedName === 'STATUS_CUT') {
+    return true
+  }
+
+  const normalizedDisplay = statusDisplay.toLowerCase()
+  return normalizedDisplay.includes('missed cut') || normalizedDisplay.includes(' mdf') || normalizedDisplay === 'mdf'
+}
+
+function inferMissedCutFromLinescores(
+  competitor: EspnCompetitor,
+  eventPeriod: number,
+  toPar: number | null,
+  cutLine: number,
+): boolean {
+  if (eventPeriod < 3 || toPar === null || toPar <= cutLine) return false
+
+  const rounds = competitor.linescores ?? []
+  const round1 = rounds.find((round) => round.period === 1)
+  const round2 = rounds.find((round) => round.period === 2)
+  const round3 = rounds.find((round) => round.period === 3)
+
+  const round1Complete = (round1?.linescores?.length ?? 0) >= 18
+  const round2Complete = (round2?.linescores?.length ?? 0) >= 18
+  const round3Holes = round3?.linescores?.length ?? 0
+  const round3Display = (round3?.displayValue ?? '').trim()
+  const round3NotStarted = round3Holes === 0 && (round3Display === '-' || round3Display === '—')
+
+  return round1Complete && round2Complete && round3NotStarted
 }
