@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   AMATEURS,
@@ -38,6 +38,36 @@ const WINNER_BONUS = -10
 const TOURNAMENT_START = new Date('2026-04-09T07:00:00-04:00')
 const TOURNAMENT_END = new Date('2026-04-12T20:00:00-04:00')
 const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD ?? 'CokeZero2026$'
+const POOL_API_TIMEOUT_MS = 10_000
+const ESPN_TIMEOUT_MS = 12_000
+
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs: number,
+): Promise<Response> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+
+  try {
+    return await fetch(input, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+function isApiState(value: unknown): value is ApiState {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Record<string, unknown>
+
+  return (
+    Array.isArray(candidate.entries)
+    && Boolean(candidate.settings)
+    && typeof candidate.settings === 'object'
+    && Boolean(candidate.manualScores)
+    && typeof candidate.manualScores === 'object'
+  )
+}
 
 function GolfPoolPage() {
   const [activeTab, setActiveTab] = useState<TabName>('leaderboard')
@@ -60,6 +90,15 @@ function GolfPoolPage() {
   const [adminScoresMessage, setAdminScoresMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null)
   const [adminSavingScores, setAdminSavingScores] = useState(false)
   const [adminScoresDraft, setAdminScoresDraft] = useState<Record<string, ManualScore>>({})
+  const pollingInFlightRef = useRef(false)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   const canSubmitEntry = useMemo(() => {
     const filledPicks = entryPicks.filter(Boolean)
@@ -88,12 +127,24 @@ function GolfPoolPage() {
   }, [entryPicks])
 
   const loadPoolState = useCallback(async () => {
-    const response = await fetch('/api/pool', { cache: 'no-store' })
+    const response = await fetchWithTimeout(
+      '/api/pool',
+      { cache: 'no-store' },
+      POOL_API_TIMEOUT_MS,
+    )
     if (!response.ok) {
       throw new Error('Failed to load pool state')
     }
 
-    const data = (await response.json()) as ApiState
+    const data = await response.json()
+    if (!isApiState(data)) {
+      throw new Error('Invalid pool state payload')
+    }
+
+    if (!mountedRef.current) {
+      return data
+    }
+
     setEntries(data.entries)
     setSettings(data.settings)
     return data
@@ -101,9 +152,11 @@ function GolfPoolPage() {
 
   const fetchLiveScores = useCallback(async (manualOverride: Record<string, ManualScore>) => {
     try {
-      const response = await fetch('https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard', {
-        cache: 'no-store',
-      })
+      const response = await fetchWithTimeout(
+        'https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard',
+        { cache: 'no-store' },
+        ESPN_TIMEOUT_MS,
+      )
       if (!response.ok) throw new Error(`ESPN status ${response.status}`)
 
       const data = (await response.json()) as {
@@ -168,9 +221,11 @@ function GolfPoolPage() {
         }
       }
 
-      setTournamentLive(true)
-      setGolferScores(nextScores)
-      setLastUpdated(`Updated: ${new Date().toLocaleTimeString()} · ESPN live`)
+      if (mountedRef.current) {
+        setTournamentLive(true)
+        setGolferScores(nextScores)
+        setLastUpdated(`Updated: ${new Date().toLocaleTimeString()} · ESPN live`)
+      }
       return
     } catch {
       const fallbackScores: Record<string, LiveScore> = {}
@@ -185,20 +240,31 @@ function GolfPoolPage() {
         }
       }
 
-      setTournamentLive(false)
-      setGolferScores(fallbackScores)
-      setLastUpdated(`Updated: ${new Date().toLocaleTimeString()} · manual override`)
+      if (mountedRef.current) {
+        setTournamentLive(false)
+        setGolferScores(fallbackScores)
+        setLastUpdated(`Updated: ${new Date().toLocaleTimeString()} · manual override`)
+      }
     }
   }, [])
 
   const loadAll = useCallback(async () => {
-    const state = await loadPoolState()
-    await fetchLiveScores(state.manualScores)
+    if (pollingInFlightRef.current) return
+    pollingInFlightRef.current = true
+
+    try {
+      const state = await loadPoolState()
+      await fetchLiveScores(state.manualScores)
+    } finally {
+      pollingInFlightRef.current = false
+    }
   }, [fetchLiveScores, loadPoolState])
 
   useEffect(() => {
     loadAll().catch(() => {
-      setLastUpdated('Unable to load data')
+      if (mountedRef.current) {
+        setLastUpdated('Unable to load data')
+      }
     })
   }, [loadAll])
 
@@ -208,7 +274,9 @@ function GolfPoolPage() {
 
     const interval = setInterval(() => {
       loadAll().catch(() => {
-        setLastUpdated('Unable to load data')
+        if (mountedRef.current) {
+          setLastUpdated('Unable to load data')
+        }
       })
     }, intervalMs)
 
