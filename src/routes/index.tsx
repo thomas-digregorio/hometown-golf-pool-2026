@@ -5,13 +5,17 @@ import {
   AMATEURS,
   DEFAULT_SETTINGS,
   FIELD,
+  PLAYER_STATUS_OPTIONS,
   TOP5,
+  TOURNAMENT_PAR,
   fmtTopar,
+  normalizeTiebreakerGuess,
   parseHole,
   parseTopar,
   resolveEspnName,
   type Entry,
   type ManualScore,
+  type PlayerStatus,
   type PoolSettings,
 } from '@/lib/golf-pool-data'
 
@@ -23,8 +27,8 @@ type TabName = 'leaderboard' | 'enter' | 'scores' | 'admin'
 
 type LiveScore = {
   topar: number | null
-  mc: boolean
-  mcR1R2Topar: number | null
+  status: PlayerStatus
+  firstTwoRoundsTopar: number | null
   thru: string | null
 }
 
@@ -34,7 +38,29 @@ type ApiState = {
   manualScores: Record<string, ManualScore>
 }
 
+type EffectivePoolScore = {
+  name: string
+  rawTopar: number | null
+  effectiveTopar: number | null
+  status: PlayerStatus
+  thru: string | null
+  note: string | null
+}
+
+type EntryScoreDetail = {
+  name: string
+  rawTopar: number | null
+  effectiveTopar: number | null
+  status: PlayerStatus
+  thru: string | null
+  note: string | null
+  isTop5: boolean
+  isWinnerPick: boolean
+  isTournamentWinner: boolean
+}
+
 const WINNER_BONUS = -10
+const EXACT_WINNER_BONUS = -5
 const TOURNAMENT_START = new Date('2026-04-09T07:00:00-04:00')
 const TOURNAMENT_END = new Date('2026-04-12T20:00:00-04:00')
 const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD ?? 'CokeZero2026$'
@@ -50,6 +76,8 @@ function GolfPoolPage() {
   const [entryName, setEntryName] = useState('')
   const [entryTiebreaker, setEntryTiebreaker] = useState('')
   const [entryPicks, setEntryPicks] = useState(['', '', '', ''])
+  const [entryWinnerPick, setEntryWinnerPick] = useState('')
+  const [entryAlternate, setEntryAlternate] = useState('')
   const [entryMessage, setEntryMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null)
   const [entrySubmitting, setEntrySubmitting] = useState(false)
 
@@ -61,8 +89,14 @@ function GolfPoolPage() {
   const [adminSavingScores, setAdminSavingScores] = useState(false)
   const [adminScoresDraft, setAdminScoresDraft] = useState<Record<string, ManualScore>>({})
 
+  const filledPicks = useMemo(() => entryPicks.filter(Boolean), [entryPicks])
+  const winnerPickOptions = useMemo(() => entryPicks.filter(Boolean), [entryPicks])
+  const alternateOptions = useMemo(
+    () => FIELD.filter((name) => !entryPicks.includes(name)),
+    [entryPicks],
+  )
+
   const canSubmitEntry = useMemo(() => {
-    const filledPicks = entryPicks.filter(Boolean)
     const uniqueCount = new Set(filledPicks).size
     const top5Count = filledPicks.filter((pick) => TOP5.includes(pick as (typeof TOP5)[number])).length
     const tbValid = entryTiebreaker.trim() !== '' && !Number.isNaN(Number.parseInt(entryTiebreaker.trim(), 10))
@@ -74,18 +108,26 @@ function GolfPoolPage() {
       && uniqueCount === filledPicks.length
       && top5Count <= 1
       && tbValid
+      && winnerPickOptions.includes(entryWinnerPick)
+      && entryAlternate.trim().length > 0
+      && alternateOptions.includes(entryAlternate)
     )
-  }, [entryName, entryPicks, entryTiebreaker, settings.picksOpen])
+  }, [alternateOptions, entryAlternate, entryName, entryTiebreaker, filledPicks, settings.picksOpen, winnerPickOptions, entryWinnerPick])
 
   const pickValidationError = useMemo(() => {
-    const filledPicks = entryPicks.filter(Boolean)
     const uniqueCount = new Set(filledPicks).size
     const top5Count = filledPicks.filter((pick) => TOP5.includes(pick as (typeof TOP5)[number])).length
 
     if (top5Count > 1) return 'You can only pick 1 golfer from the Top 5.'
     if (uniqueCount < filledPicks.length) return 'You picked the same golfer twice.'
+    if (filledPicks.length === 4 && !winnerPickOptions.includes(entryWinnerPick)) {
+      return 'Choose which one of your 4 golfers is your winner pick.'
+    }
+    if (filledPicks.length === 4 && (entryAlternate.trim() === '' || !alternateOptions.includes(entryAlternate))) {
+      return 'Choose a valid alternate who is not one of your 4 picks.'
+    }
     return null
-  }, [entryPicks])
+  }, [alternateOptions, entryAlternate, entryWinnerPick, filledPicks, winnerPickOptions])
 
   const loadPoolState = useCallback(async () => {
     const response = await fetch('/api/pool', { cache: 'no-store' })
@@ -99,7 +141,30 @@ function GolfPoolPage() {
     return data
   }, [])
 
+  const applyManualScores = useCallback((manualOverride: Record<string, ManualScore>, label: string) => {
+    const fallbackScores: Record<string, LiveScore> = {}
+    for (const golfer of FIELD) {
+      const score = manualOverride[golfer]
+      if (!score) continue
+      fallbackScores[golfer] = {
+        topar: score.topar,
+        status: score.status,
+        firstTwoRoundsTopar: score.status === 'missed_cut' ? score.topar : null,
+        thru: null,
+      }
+    }
+
+    setTournamentLive(false)
+    setGolferScores(fallbackScores)
+    setLastUpdated(`Updated: ${new Date().toLocaleTimeString()} · ${label}`)
+  }, [])
+
   const fetchLiveScores = useCallback(async (manualOverride: Record<string, ManualScore>) => {
+    if (new Date() > TOURNAMENT_END) {
+      applyManualScores(manualOverride, 'final snapshot')
+      return
+    }
+
     try {
       const response = await fetch('https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard', {
         cache: 'no-store',
@@ -138,14 +203,14 @@ function GolfPoolPage() {
         if (!resolvedName) continue
 
         const statusName = competitor.status?.type?.name ?? ''
-        const isMissedCut = statusName === 'STATUS_MISSED_CUT' || statusName === 'STATUS_CUT'
+        const status = toPlayerStatus(statusName, competitor.linescores?.length ?? 0)
         const toPar = parseTopar(competitor.score)
 
-        let mcR1R2Topar: number | null = null
-        if (isMissedCut && (competitor.linescores?.length ?? 0) >= 2) {
+        let firstTwoRoundsTopar: number | null = null
+        if (status === 'missed_cut' && (competitor.linescores?.length ?? 0) >= 2) {
           const r1 = parseTopar(competitor.linescores?.[0]?.displayValue)
           const r2 = parseTopar(competitor.linescores?.[1]?.displayValue)
-          mcR1R2Topar = r1 !== null && r2 !== null ? r1 + r2 : toPar
+          firstTwoRoundsTopar = r1 !== null && r2 !== null ? r1 + r2 : toPar
         }
 
         let thru = competitor.status?.displayValue ?? null
@@ -162,8 +227,8 @@ function GolfPoolPage() {
 
         nextScores[resolvedName] = {
           topar: toPar,
-          mc: isMissedCut,
-          mcR1R2Topar,
+          status,
+          firstTwoRoundsTopar,
           thru,
         }
       }
@@ -171,25 +236,10 @@ function GolfPoolPage() {
       setTournamentLive(true)
       setGolferScores(nextScores)
       setLastUpdated(`Updated: ${new Date().toLocaleTimeString()} · ESPN live`)
-      return
     } catch {
-      const fallbackScores: Record<string, LiveScore> = {}
-      for (const golfer of FIELD) {
-        const score = manualOverride[golfer]
-        if (!score) continue
-        fallbackScores[golfer] = {
-          topar: score.topar,
-          mc: score.mc,
-          mcR1R2Topar: null,
-          thru: null,
-        }
-      }
-
-      setTournamentLive(false)
-      setGolferScores(fallbackScores)
-      setLastUpdated(`Updated: ${new Date().toLocaleTimeString()} · manual override`)
+      applyManualScores(manualOverride, 'manual override')
     }
-  }, [])
+  }, [applyManualScores])
 
   const loadAll = useCallback(async () => {
     const state = await loadPoolState()
@@ -203,8 +253,7 @@ function GolfPoolPage() {
   }, [loadAll])
 
   useEffect(() => {
-    const inTournamentWindow = new Date() >= TOURNAMENT_START && new Date() <= TOURNAMENT_END
-    const intervalMs = inTournamentWindow ? 3 * 60 * 1000 : 15 * 60 * 1000
+    const intervalMs = new Date() > TOURNAMENT_END ? 30 * 60 * 1000 : 5 * 60 * 1000
 
     const interval = setInterval(() => {
       loadAll().catch(() => {
@@ -221,102 +270,231 @@ function GolfPoolPage() {
       const source = golferScores[golfer]
       draft[golfer] = {
         topar: source?.topar ?? null,
-        mc: Boolean(source?.mc),
+        status: source?.status ?? 'active',
       }
     }
     setAdminScoresDraft(draft)
   }, [golferScores])
 
-  const getEffectiveScore = useCallback((name: string) => {
-    const raw = golferScores[name]
-    if (!raw || raw.topar === null || raw.topar === undefined) {
-      return { topar: null as number | null, mc: false }
+  const poolGolfers = useMemo(() => {
+    const names = new Set<string>()
+    for (const entry of entries) {
+      for (const pick of [entry.pick1, entry.pick2, entry.pick3, entry.pick4]) {
+        if (pick) names.add(pick)
+      }
+      if (entry.alternate) names.add(entry.alternate)
+    }
+    if (settings.tournamentWinner) names.add(settings.tournamentWinner)
+
+    if (names.size === 0) {
+      return Object.keys(golferScores).length > 0 ? Object.keys(golferScores) : FIELD
     }
 
-    if (raw.mc) {
-      const madeCutScores = Object.values(golferScores)
-        .filter((score) => !score.mc && score.topar !== null)
-        .map((score) => score.topar as number)
+    return [...names]
+  }, [entries, golferScores, settings.tournamentWinner])
 
-      const worstMadeCut = madeCutScores.length > 0 ? Math.max(...madeCutScores) : settings.cutLine
-      const firstTwoRounds = raw.mcR1R2Topar !== null ? raw.mcR1R2Topar : raw.topar
-      const missedBy = firstTwoRounds !== null ? Math.max(0, firstTwoRounds - settings.cutLine) : 1
+  const effectivePoolScores = useMemo(() => {
+    const referenceMadeCutScores = poolGolfers
+      .map((name) => golferScores[name])
+      .filter((score): score is LiveScore => Boolean(score && score.topar !== null && score.status === 'active'))
+      .map((score) => score.topar as number)
 
-      return {
-        topar: worstMadeCut + missedBy,
-        mc: true,
-        missedBy,
+    const worstMadeCutScore = referenceMadeCutScores.length > 0
+      ? Math.max(...referenceMadeCutScores)
+      : settings.cutLine
+
+    const scoreMap: Record<string, EffectivePoolScore> = {}
+    const earlyWithdrawals: string[] = []
+
+    for (const name of poolGolfers) {
+      const raw = golferScores[name]
+      if (!raw || raw.topar === null || raw.topar === undefined) {
+        scoreMap[name] = {
+          name,
+          rawTopar: null,
+          effectiveTopar: null,
+          status: raw?.status ?? 'active',
+          thru: raw?.thru ?? null,
+          note: null,
+        }
+        continue
+      }
+
+      if (raw.status === 'missed_cut') {
+        const firstTwoRounds = raw.firstTwoRoundsTopar ?? raw.topar
+        const missedBy = firstTwoRounds !== null ? Math.max(0, firstTwoRounds - settings.cutLine) : 1
+        scoreMap[name] = {
+          name,
+          rawTopar: raw.topar,
+          effectiveTopar: worstMadeCutScore + missedBy,
+          status: raw.status,
+          thru: raw.thru,
+          note: `MC penalty: ${fmtTopar(worstMadeCutScore)} + ${missedBy}`,
+        }
+        continue
+      }
+
+      if (raw.status === 'withdrawn_late') {
+        scoreMap[name] = {
+          name,
+          rawTopar: raw.topar,
+          effectiveTopar: worstMadeCutScore,
+          status: raw.status,
+          thru: raw.thru,
+          note: `WD R3/R4 penalty: ${fmtTopar(worstMadeCutScore)}`,
+        }
+        continue
+      }
+
+      if (raw.status === 'withdrawn_early') {
+        earlyWithdrawals.push(name)
+        scoreMap[name] = {
+          name,
+          rawTopar: raw.topar,
+          effectiveTopar: null,
+          status: raw.status,
+          thru: raw.thru,
+          note: null,
+        }
+        continue
+      }
+
+      scoreMap[name] = {
+        name,
+        rawTopar: raw.topar,
+        effectiveTopar: raw.topar,
+        status: raw.status,
+        thru: raw.thru,
+        note: null,
       }
     }
 
-    return {
-      topar: raw.topar,
-      mc: false,
+    const currentWorstPoolScore = Object.values(scoreMap)
+      .filter((score) => score.effectiveTopar !== null)
+      .map((score) => score.effectiveTopar as number)
+
+    const worstPoolScore = currentWorstPoolScore.length > 0
+      ? Math.max(...currentWorstPoolScore)
+      : worstMadeCutScore
+
+    for (const name of earlyWithdrawals) {
+      scoreMap[name] = {
+        ...(scoreMap[name] ?? {
+          name,
+          rawTopar: null,
+          effectiveTopar: null,
+          status: 'withdrawn_early' as PlayerStatus,
+          thru: null,
+          note: null,
+        }),
+        effectiveTopar: worstPoolScore + 1,
+        note: `WD R1/R2 penalty: ${fmtTopar(worstPoolScore + 1)}`,
+      }
     }
-  }, [golferScores, settings.cutLine])
+
+    return scoreMap
+  }, [golferScores, poolGolfers, settings.cutLine])
 
   const leaderboardData = useMemo(() => {
+    const winnerToPar = settings.tournamentWinner ? golferScores[settings.tournamentWinner]?.topar ?? null : null
+    const winnerRawScore = winnerToPar === null ? null : TOURNAMENT_PAR + winnerToPar
+
     const scoredEntries = entries.map((entry) => {
       const picks = [entry.pick1, entry.pick2, entry.pick3, entry.pick4]
-      const hasWinnerPick = Boolean(settings.tournamentWinner && picks.includes(settings.tournamentWinner))
-
-      let total = 0
+      let subtotal = 0
       let allScored = true
 
       const details = picks.map((pickName) => {
-        const effective = getEffectiveScore(pickName)
-        if (effective.topar === null) allScored = false
-        total += effective.topar ?? 0
+        const effective = effectivePoolScores[pickName]
+        if (!effective || effective.effectiveTopar === null) {
+          allScored = false
+        }
+        subtotal += effective?.effectiveTopar ?? 0
 
         return {
           name: pickName,
-          topar: effective.topar,
-          mc: effective.mc,
-          thru: golferScores[pickName]?.thru ?? null,
+          rawTopar: effective?.rawTopar ?? null,
+          effectiveTopar: effective?.effectiveTopar ?? null,
+          status: effective?.status ?? 'active',
+          thru: effective?.thru ?? null,
+          note: effective?.note ?? null,
           isTop5: TOP5.includes(pickName as (typeof TOP5)[number]),
-          isWinner: settings.tournamentWinner === pickName,
-        }
+          isWinnerPick: entry.winnerPick === pickName,
+          isTournamentWinner: settings.tournamentWinner === pickName,
+        } satisfies EntryScoreDetail
       })
 
-      if (allScored && hasWinnerPick) {
-        total += WINNER_BONUS
-      }
+      const hasWinnerPick = Boolean(settings.tournamentWinner && picks.includes(settings.tournamentWinner))
+      const exactWinnerHit = Boolean(
+        settings.tournamentWinner
+        && entry.winnerPick
+        && entry.winnerPick === settings.tournamentWinner,
+      )
+      const total = allScored
+        ? subtotal + (hasWinnerPick ? WINNER_BONUS : 0) + (exactWinnerHit ? EXACT_WINNER_BONUS : 0)
+        : null
+
+      const alternateScore = entry.alternate ? effectivePoolScores[entry.alternate]?.effectiveTopar ?? null : null
+      const normalizedGuess = normalizeTiebreakerGuess(entry.tiebreaker)
+      const tiebreakDistance =
+        normalizedGuess !== null && winnerRawScore !== null ? Math.abs(normalizedGuess - winnerRawScore) : null
 
       return {
         ...entry,
         details,
         allScored,
-        total: allScored ? total : null,
+        subtotal: allScored ? subtotal : null,
+        total,
         hasWinnerPick,
+        exactWinnerHit,
+        alternateScore,
+        normalizedGuess,
+        tiebreakDistance,
       }
     })
 
-    const ready = scoredEntries.filter((entry) => entry.allScored && entry.total !== null)
-    const pending = scoredEntries.filter((entry) => !entry.allScored)
+    const sorted = [...scoredEntries].sort((a, b) => compareEntries(a, b))
+    const lowestTotal = sorted.find((entry) => entry.total !== null)?.total ?? null
 
-    const winnerScore =
-      settings.tournamentWinner && golferScores[settings.tournamentWinner]?.topar !== undefined
-        ? golferScores[settings.tournamentWinner]?.topar ?? null
-        : null
+    const withPayouts = sorted.map((entry, index) => {
+      const difference = entry.total !== null && lowestTotal !== null ? entry.total - lowestTotal : null
+      const payout = difference === null ? null : index === 0
+        ? sorted
+          .slice(1)
+          .reduce((sum, next) => sum + Math.max(0, (next.total ?? lowestTotal) - lowestTotal), 0)
+        : difference
 
-    ready.sort((a, b) => {
-      if (a.total !== b.total) return (a.total as number) - (b.total as number)
-      if (winnerScore !== null && winnerScore !== undefined) {
-        const aDistance = Math.abs((a.tiebreaker ?? 9999) - winnerScore)
-        const bDistance = Math.abs((b.tiebreaker ?? 9999) - winnerScore)
-        return aDistance - bDistance
+      return {
+        ...entry,
+        rank: entry.total === null ? null : index + 1,
+        difference,
+        payout,
       }
-      return 0
     })
+
+    const tiebreakRows = [...withPayouts].sort((a, b) => compareTiebreakRows(a, b))
 
     return {
-      ready,
-      pending,
-      lowestTotal: ready.length ? (ready[0].total as number) : null,
-      winnerScore,
-      topTied: ready.length > 1 && ready[0].total === ready[1].total,
+      rows: withPayouts,
+      tiebreakRows,
+      lowestTotal,
+      winnerToPar,
+      winnerRawScore,
     }
-  }, [entries, getEffectiveScore, golferScores, settings.tournamentWinner])
+  }, [effectivePoolScores, entries, golferScores, settings.tournamentWinner])
+
+  const poolScoreRows = useMemo(() => {
+    return [...poolGolfers]
+      .map((name) => effectivePoolScores[name] ?? {
+        name,
+        rawTopar: null,
+        effectiveTopar: null,
+        status: 'active' as PlayerStatus,
+        thru: null,
+        note: null,
+      })
+      .sort((a, b) => sortPoolRows(a, b))
+  }, [effectivePoolScores, poolGolfers])
 
   const submitEntry = useCallback(async () => {
     if (!canSubmitEntry || !settings.picksOpen || entrySubmitting) return
@@ -336,6 +514,8 @@ function GolfPoolPage() {
             pick2: entryPicks[1],
             pick3: entryPicks[2],
             pick4: entryPicks[3],
+            winnerPick: entryWinnerPick,
+            alternate: entryAlternate,
             tiebreaker: Number.parseInt(entryTiebreaker.trim(), 10),
           },
         }),
@@ -359,7 +539,7 @@ function GolfPoolPage() {
     } finally {
       setEntrySubmitting(false)
     }
-  }, [canSubmitEntry, entryName, entryPicks, entrySubmitting, entryTiebreaker, loadAll, settings.picksOpen])
+  }, [canSubmitEntry, entryAlternate, entryName, entryPicks, entrySubmitting, entryTiebreaker, entryWinnerPick, loadAll, settings.picksOpen])
 
   const saveSettings = useCallback(async (updates: Partial<PoolSettings>) => {
     setAdminSettingsMessage(null)
@@ -447,8 +627,8 @@ function GolfPoolPage() {
           <div className="header-title">
             <span className="flag">⛳</span>
             <div>
-              <h1>Golf Pool 2026</h1>
-              <div className="subtitle">Masters · Augusta National · Apr 9-12</div>
+              <h1>The Masters 2026 Pool Tracker</h1>
+              <div className="subtitle">Final board, payouts, tiebreakers, and admin controls</div>
             </div>
           </div>
           {tournamentLive ? (
@@ -456,7 +636,9 @@ function GolfPoolPage() {
               <div className="live-dot" />
               LIVE
             </div>
-          ) : null}
+          ) : (
+            <div className="live-badge is-final">FINAL</div>
+          )}
         </div>
       </header>
 
@@ -467,7 +649,7 @@ function GolfPoolPage() {
             className={`tab ${activeTab === 'leaderboard' ? 'active' : ''}`}
             onClick={() => setActiveTab('leaderboard')}
           >
-            🏆 Leaderboard
+            🏆 Final Board
           </button>
           <button
             type="button"
@@ -481,7 +663,7 @@ function GolfPoolPage() {
             className={`tab ${activeTab === 'scores' ? 'active' : ''}`}
             onClick={() => setActiveTab('scores')}
           >
-            📊 Scores
+            📊 Pool Scores
           </button>
           <button
             type="button"
@@ -509,128 +691,138 @@ function GolfPoolPage() {
               </button>
             </div>
 
-            {entries.length === 0 ? (
-              <div className="empty-state">
-                <div className="icon">⛳</div>
-                <p>No entries yet. Be the first to submit your picks!</p>
+            {settings.tournamentWinner ? (
+              <div className="winner-banner">
+                <strong>Winner:</strong> {settings.tournamentWinner}
+                {leaderboardData.winnerToPar !== null ? ` · ${fmtTopar(leaderboardData.winnerToPar)} / ${leaderboardData.winnerRawScore}` : ''}
+                <span className="winner-banner-note">Entry bonus: -10 if the winner is in your four, plus -5 if your designated winner pick is exact.</span>
               </div>
-            ) : (
-              <>
-                {!tournamentLive ? (
-                  <div className="pretournament-banner">
-                    <div className="banner-icon">🏌️</div>
-                    <div>
-                      <h3>Picks are locked in - we&apos;re ready!</h3>
-                      <p>
-                        {renderPreTournamentMessage(entries.length)}
-                      </p>
-                    </div>
-                  </div>
-                ) : null}
+            ) : null}
 
-                {settings.tournamentWinner ? (
-                  <div className="winner-banner">
-                    🏆 <strong>Masters Champion: {settings.tournamentWinner}</strong> - Anyone who picked them receives a <strong>-10 stroke bonus</strong>.
-                  </div>
-                ) : null}
+            <div className="board-shell">
+              <div className="card players-card">
+                <div className="section-head">
+                  <h2>⛳ Pool Players</h2>
+                  <span>{poolScoreRows.length} golfers</span>
+                </div>
+                <div className="players-table">
+                  <div className="players-table-head">#</div>
+                  <div className="players-table-head">Golfer</div>
+                  <div className="players-table-head center">Official</div>
+                  <div className="players-table-head center">Applied</div>
 
-                {leaderboardData.ready.length > 0 ? (
-                  <table className="lb-table">
-                    <thead>
-                      <tr>
-                        <th>Pos</th>
-                        <th style={{ textAlign: 'left' }}>Participant &amp; Picks</th>
-                        <th>Score</th>
-                        <th>Δ Lead</th>
-                        <th>Payout</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {leaderboardData.ready.map((entry, index) => {
-                        const isLeader = index === 0
-                        const lowestTotal = leaderboardData.lowestTotal ?? 0
-                        const scoreDiff = (entry.total ?? 0) - lowestTotal
-                        const payout = isLeader
-                          ? leaderboardData.ready
-                            .slice(1)
-                            .reduce((sum, next) => sum + ((next.total ?? 0) - lowestTotal), 0)
-                          : scoreDiff
-
-                        return (
-                          <tr key={entry.id} className={isLeader ? 'rank-1' : ''}>
-                            <td className="pos-cell">{isLeader ? '🏆' : index + 1}</td>
-                            <td>
-                              <div className="player-name">{entry.name}</div>
-                              <div className="player-picks">
-                                {entry.details.map((detail) => {
-                                  const holeString = detail.thru ? parseHole(detail.thru) : null
-                                  const holePart = holeString && holeString !== 'F' && !detail.mc ? ` / ${holeString}` : ''
-                                  const scorePart = detail.topar !== null ? ` (${fmtTopar(detail.topar)}${holePart})` : ''
-
-                                  return (
-                                    <span
-                                      key={`${entry.id}-${detail.name}`}
-                                      className={`pick-chip ${detail.isWinner ? 'winner-pick' : detail.mc ? 'mc' : detail.isTop5 ? 'top5' : ''}`}
-                                    >
-                                      {detail.name}
-                                      {detail.mc ? ' MC' : `${scorePart}${detail.isWinner ? ' 🏆' : ''}`}
-                                    </span>
-                                  )
-                                })}
-                              </div>
-
-                              {entry.hasWinnerPick ? (
-                                <div className="winner-bonus-note">✅ Winner bonus -10 applied</div>
-                              ) : null}
-
-                              {leaderboardData.topTied
-                              && entry.total === leaderboardData.lowestTotal
-                              && entry.tiebreaker !== null ? (
-                                <div className="tiebreaker-note">
-                                  🎯 Tiebreaker: {fmtTopar(entry.tiebreaker)}
-                                  {leaderboardData.winnerScore !== null
-                                    ? ` · actual: ${fmtTopar(leaderboardData.winnerScore)}, off by ${Math.abs(entry.tiebreaker - leaderboardData.winnerScore)}`
-                                    : ''}
-                                </div>
-                              ) : null}
-                            </td>
-                            <td>
-                              <span className={`score-big ${toparClass(entry.total)}`}>
-                                {fmtTopar(entry.total)}
-                              </span>
-                            </td>
-                            <td className={`diff-cell ${scoreDiff > 0 ? 'diff-over' : ''}`}>
-                              {scoreDiff === 0 ? '—' : `+${scoreDiff}`}
-                            </td>
-                            <td>
-                              <span className={isLeader ? 'payout-win' : 'payout-lose'}>
-                                {isLeader ? `+$${payout}` : `-$${payout}`}
-                              </span>
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                ) : null}
-
-                {leaderboardData.pending.length > 0 ? (
-                  <>
-                    <div className="pending-title">
-                      Awaiting live scores ({leaderboardData.pending.length}):
-                    </div>
-                    {leaderboardData.pending.map((entry) => (
-                      <div key={`pending-${entry.id}`} className="pending-card">
-                        <strong>{entry.name}</strong>
-                        <div className="pending-picks">
-                          {entry.details.map((detail) => detail.name).join(' · ')}
-                        </div>
+                  {poolScoreRows.map((score, index) => (
+                    <div key={`pool-${score.name}`} className="players-table-row">
+                      <div className="players-table-cell rank">{index + 1}</div>
+                      <div className="players-table-cell golfer">
+                        <span className="golfer-name-inline">
+                          {score.name}
+                          {settings.tournamentWinner === score.name ? <span className="badge badge-champion mini-badge">W</span> : null}
+                          {TOP5.includes(score.name as (typeof TOP5)[number]) ? <span className="badge badge-gold mini-badge">T5</span> : null}
+                        </span>
+                        {score.note ? <div className="sub-note">{score.note}</div> : null}
                       </div>
-                    ))}
-                  </>
-                ) : null}
-              </>
-            )}
+                      <div className={`players-table-cell center ${toparClass(score.rawTopar)}`}>{fmtTopar(score.rawTopar)}</div>
+                      <div className={`players-table-cell center ${toparClass(score.effectiveTopar)}`}>{fmtTopar(score.effectiveTopar)}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="entry-board">
+                {leaderboardData.rows.map((entry) => (
+                  <article key={entry.id} className={`entry-card ${entry.rank === 1 ? 'entry-card-lead' : ''}`}>
+                    <div className="entry-card-header">
+                      <div>
+                        <div className="entry-card-rank">{entry.rank ? `#${entry.rank}` : '—'}</div>
+                        <h3>{entry.name}</h3>
+                      </div>
+                      <div className={`entry-card-total ${toparClass(entry.total)}`}>{fmtTopar(entry.total)}</div>
+                    </div>
+
+                    <div className="entry-card-grid">
+                      {entry.details.map((detail) => (
+                        <div key={`${entry.id}-${detail.name}`} className="entry-pick-row">
+                          <div className={`winner-slot ${detail.isWinnerPick ? 'filled' : ''}`}>{detail.isWinnerPick ? 'W' : ''}</div>
+                          <div className="entry-pick-name">
+                            {detail.name}
+                            {detail.isTournamentWinner ? <span className="badge badge-champion mini-badge">Winner</span> : null}
+                          </div>
+                          <div className={`entry-pick-score ${toparClass(detail.effectiveTopar)}`}>
+                            {fmtTopar(detail.effectiveTopar)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="entry-card-meta">
+                      <div><strong>Alternate:</strong> {entry.alternate ?? '—'} {entry.alternateScore !== null ? `(${fmtTopar(entry.alternateScore)})` : ''}</div>
+                      <div><strong>Tiebreaker:</strong> {formatSubmittedTiebreaker(entry.tiebreaker)}</div>
+                    </div>
+
+                    {(entry.hasWinnerPick || entry.exactWinnerHit) ? (
+                      <div className="bonus-strip">
+                        {entry.hasWinnerPick ? <span>Winner bonus -10</span> : null}
+                        {entry.exactWinnerHit ? <span>Exact winner bonus -5</span> : null}
+                      </div>
+                    ) : null}
+                  </article>
+                ))}
+              </div>
+            </div>
+
+            <div className="board-summary">
+              <div className="card">
+                <div className="section-head">
+                  <h2>🏆 Standings</h2>
+                  <span>$1 per stroke</span>
+                </div>
+                <div className="summary-table">
+                  <div className="summary-table-head">Pos</div>
+                  <div className="summary-table-head">Entry</div>
+                  <div className="summary-table-head center">Score</div>
+                  <div className="summary-table-head center">To Lead</div>
+                  <div className="summary-table-head center">Payout</div>
+
+                  {leaderboardData.rows.map((entry) => (
+                    <div key={`standings-${entry.id}`} className="summary-table-row">
+                      <div className="summary-table-cell rank">{entry.rank ?? '—'}</div>
+                      <div className="summary-table-cell">
+                        {entry.name}
+                        {entry.rank === 1 ? <span className="badge badge-champion mini-badge">Winner</span> : null}
+                      </div>
+                      <div className={`summary-table-cell center ${toparClass(entry.total)}`}>{fmtTopar(entry.total)}</div>
+                      <div className="summary-table-cell center">{entry.difference === null || entry.difference === 0 ? '—' : `+${entry.difference}`}</div>
+                      <div className={`summary-table-cell center ${entry.rank === 1 ? 'payout-win' : 'payout-lose'}`}>
+                        {entry.payout === null ? '—' : entry.rank === 1 ? `+$${entry.payout}` : `-$${entry.payout}`}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="card">
+                <div className="section-head">
+                  <h2>🥇 Tiebreakers</h2>
+                  <span>{leaderboardData.winnerRawScore !== null ? `Actual: ${fmtTopar(leaderboardData.winnerToPar)} / ${leaderboardData.winnerRawScore}` : 'Waiting on winner'}</span>
+                </div>
+                <div className="summary-table">
+                  <div className="summary-table-head">Entry</div>
+                  <div className="summary-table-head center">Guess</div>
+                  <div className="summary-table-head center">Off</div>
+                  <div className="summary-table-head center">Alternate</div>
+
+                  {leaderboardData.tiebreakRows.map((entry) => (
+                    <div key={`tiebreak-${entry.id}`} className="summary-table-row">
+                      <div className="summary-table-cell">{entry.name}</div>
+                      <div className="summary-table-cell center">{formatSubmittedTiebreaker(entry.tiebreaker)}</div>
+                      <div className="summary-table-cell center">{formatOffBy(entry.tiebreakDistance)}</div>
+                      <div className={`summary-table-cell center ${toparClass(entry.alternateScore)}`}>{fmtTopar(entry.alternateScore)}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
           </section>
         ) : null}
 
@@ -642,7 +834,7 @@ function GolfPoolPage() {
                   <div className="banner-icon">🔒</div>
                   <div>
                     <h3>Picks are locked</h3>
-                    <p>The entry window is closed. Check the Leaderboard once the tournament begins.</p>
+                    <p>The tournament is underway or complete. Use Admin if you need to reopen entries.</p>
                   </div>
                 </div>
               </div>
@@ -657,16 +849,12 @@ function GolfPoolPage() {
                 ) : null}
 
                 <div className="rules-notice">
-                  <strong>📋 Pool Rules</strong>
+                  <strong>Pool rules</strong>
                   <ul>
-                    <li>Pick 4 golfers - lowest combined to-par score wins</li>
-                    <li>Payout: $2 per stroke difference vs. the winner</li>
-                    <li>Only 1 pick allowed from the Top 5 (OWGR)</li>
-                    <li>Missed cut penalty: worst made-cut score + strokes missed by</li>
-                    <li>
-                      <strong>🏆 Winner bonus: -10 strokes if one of your picks wins the Masters</strong>
-                    </li>
-                    <li>Tiebreaker: closest guess to the winning score (to par) - used only if tied</li>
+                    <li>Pick 4 golfers. Lowest cumulative score wins.</li>
+                    <li>You can only use 1 golfer from the Top 5 in your 4 picks.</li>
+                    <li>If the winner is in your 4, you get -10. If your designated winner pick is exact, you get another -5.</li>
+                    <li>Tiebreaker is the winning golfer&apos;s final score. The second tiebreaker is the lowest alternate.</li>
                   </ul>
                 </div>
 
@@ -685,7 +873,7 @@ function GolfPoolPage() {
                 <div className="top5-notice">
                   ⭐
                   <span>
-                    You may only pick <strong>1 golfer from the Top 5</strong> (Scheffler, McIlroy, Young, Fleetwood, Spaun - OWGR #1-5). The rest must come from the field.
+                    One Top 5 golfer max in your main four. The alternate can be any golfer not already in your picks.
                   </span>
                 </div>
 
@@ -701,6 +889,13 @@ function GolfPoolPage() {
                           const next = [...entryPicks]
                           next[index] = event.target.value
                           setEntryPicks(next)
+
+                          if (!next.includes(entryWinnerPick)) {
+                            setEntryWinnerPick('')
+                          }
+                          if (next.includes(entryAlternate)) {
+                            setEntryAlternate('')
+                          }
                         }}
                       >
                         <option value="">- select golfer -</option>
@@ -722,20 +917,51 @@ function GolfPoolPage() {
                   </div>
                 ))}
 
+                <div className="form-group">
+                  <label className="form-label" htmlFor="winner-pick">Designated winner pick</label>
+                  <select
+                    id="winner-pick"
+                    value={entryWinnerPick}
+                    onChange={(event) => setEntryWinnerPick(event.target.value)}
+                  >
+                    <option value="">- choose one of your 4 picks -</option>
+                    {winnerPickOptions.map((name) => (
+                      <option key={`winner-pick-${name}`} value={name}>{name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label" htmlFor="alternate-pick">Alternate</label>
+                  <select
+                    id="alternate-pick"
+                    value={entryAlternate}
+                    onChange={(event) => setEntryAlternate(event.target.value)}
+                  >
+                    <option value="">- choose alternate -</option>
+                    {alternateOptions.map((name) => (
+                      <option key={`alternate-${name}`} value={name}>
+                        {name}
+                        {AMATEURS.has(name) ? ' (a)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
                 <div className="form-group tiebreaker-group">
-                  <label className="form-label" htmlFor="tiebreaker">🎯 Tiebreaker - Winning score (to par)</label>
+                  <label className="form-label" htmlFor="tiebreaker">Tiebreaker - winning golfer final score</label>
                   <input
                     id="tiebreaker"
                     type="number"
                     min={-30}
-                    max={10}
-                    placeholder="e.g. -17"
+                    max={300}
+                    placeholder="e.g. -12 or 276"
                     value={entryTiebreaker}
                     onChange={(event) => setEntryTiebreaker(event.target.value)}
                     className="tiebreaker-input"
                   />
                   <div className="form-hint">
-                    Guess the Masters winner&apos;s final score vs. par (e.g. -17). Only used to break a tie.
+                    Enter either the winner&apos;s score to par or total strokes.
                   </div>
                 </div>
 
@@ -756,7 +982,7 @@ function GolfPoolPage() {
                   {entrySubmitting ? 'Submitting...' : 'Submit My Picks'}
                 </button>
 
-                <p className="entry-note">You can update your picks any time while the entry window is open.</p>
+                <p className="entry-note">You can update your entry while the entry window is open.</p>
               </div>
             )}
           </section>
@@ -765,73 +991,48 @@ function GolfPoolPage() {
         {activeTab === 'scores' ? (
           <section>
             <div className="card">
-              <h2>📊 Live Golfer Scores</h2>
-              <p className="scores-help">
-                Scores shown as strokes relative to par (E = even, -3 = 3 under, +2 = 2 over).
-                Missed cut players shown with penalty. Updates automatically.
-              </p>
+              <div className="section-head">
+                <h2>📊 Pool Golfer Scores</h2>
+                <span>Applied scoring reflects cut and withdrawal rules.</span>
+              </div>
 
-              {!tournamentLive && Object.keys(golferScores).length === 0 ? (
-                <div className="empty-state">
-                  <div className="icon">📅</div>
-                  <p className="empty-title">Tournament starts Thursday, April 9</p>
-                  <p className="empty-subtitle">Live scores from ESPN will appear here automatically.</p>
-                </div>
-              ) : (
-                <div className="scores-grid">
-                  <div className="sh">Golfer</div>
-                  <div className="sh center">Score</div>
-                  <div className="sh center">Hole</div>
-                  <div className="sh center">Status</div>
+              <div className="scores-grid">
+                <div className="sh">Golfer</div>
+                <div className="sh center">Official</div>
+                <div className="sh center">Applied</div>
+                <div className="sh center">Status</div>
+                <div className="sh center">Hole</div>
 
-                  {[...FIELD]
-                    .sort((a, b) => sortScores(a, b, golferScores))
-                    .map((name) => {
-                      const score = golferScores[name]
-                      const toPar = score?.topar ?? null
-                      const hole = score?.thru ? parseHole(score.thru) : null
-                      const missedCut = Boolean(score?.mc)
-                      const champion = settings.tournamentWinner === name
-                      const isTop5 = TOP5.includes(name as (typeof TOP5)[number])
-
-                      return (
-                        <div key={`score-${name}`} className="score-row">
-                          <div className={isTop5 || champion ? 'bold-name' : ''}>
-                            {name}
-                            {champion ? <span className="badge badge-champion mini-badge">🏆</span> : null}
-                            {!champion && isTop5 ? <span className="badge badge-gold mini-badge">T5</span> : null}
-                            {AMATEURS.has(name) ? <span className="amateur">(a)</span> : null}
-                          </div>
-                          <div className={`center score-value ${toPar !== null ? toparClass(toPar) : ''}`}>
-                            {toPar !== null ? fmtTopar(toPar) : '—'}
-                          </div>
-                          <div className="center">
-                            {missedCut ? (
-                              <span className="hole-muted">—</span>
-                            ) : hole === 'F' ? (
-                              <span className="hole-final">F</span>
-                            ) : hole ? (
-                              <span className="hole-live">{hole}</span>
-                            ) : (
-                              <span className="hole-muted">—</span>
-                            )}
-                          </div>
-                          <div className="center">
-                            {missedCut ? (
-                              <span className="badge badge-red">MC</span>
-                            ) : champion ? (
-                              <span className="badge badge-champion">🏆 WON</span>
-                            ) : toPar !== null ? (
-                              <span className="badge badge-green">Active</span>
-                            ) : (
-                              <span className="badge badge-gray">—</span>
-                            )}
-                          </div>
+                {poolScoreRows.map((score) => {
+                  const hole = score.thru ? parseHole(score.thru) : null
+                  return (
+                    <div key={`score-${score.name}`} className="score-row">
+                      <div>
+                        <div className={TOP5.includes(score.name as (typeof TOP5)[number]) ? 'bold-name' : ''}>
+                          {score.name}
                         </div>
-                      )
-                    })}
-                </div>
-              )}
+                        {score.note ? <div className="sub-note">{score.note}</div> : null}
+                      </div>
+                      <div className={`center score-value ${toparClass(score.rawTopar)}`}>{fmtTopar(score.rawTopar)}</div>
+                      <div className={`center score-value ${toparClass(score.effectiveTopar)}`}>{fmtTopar(score.effectiveTopar)}</div>
+                      <div className="center">
+                        <span className={`badge ${statusBadgeClass(score.status)}`}>{statusLabel(score.status)}</span>
+                      </div>
+                      <div className="center">
+                        {score.status !== 'active' ? (
+                          <span className="hole-muted">—</span>
+                        ) : hole === 'F' ? (
+                          <span className="hole-final">F</span>
+                        ) : hole ? (
+                          <span className="hole-live">{hole}</span>
+                        ) : (
+                          <span className="hole-muted">—</span>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
             </div>
           </section>
         ) : null}
@@ -901,7 +1102,7 @@ function GolfPoolPage() {
                   <div className="settings-block">
                     <div className="toggle-label">✂️ Cut Line (to par)</div>
                     <div className="toggle-sublabel settings-help">
-                      The to-par score a player must meet or beat to make the cut. Default is +6.
+                      Players missing the cut get the worst made-cut score plus the number of shots they missed by.
                     </div>
                     <div className="settings-row">
                       <input
@@ -935,13 +1136,12 @@ function GolfPoolPage() {
                         Save
                       </button>
                     </div>
-                    <div className="cut-line-current">Current cut line: {fmtTopar(settings.cutLine)}</div>
                   </div>
 
                   <div className="settings-block no-border">
-                    <div className="toggle-label">🏆 Masters Champion</div>
+                    <div className="toggle-label">🏆 Tournament Winner</div>
                     <div className="toggle-sublabel settings-help">
-                      Set once the winner is confirmed. Applies -10 stroke bonus to anyone who picked them.
+                      Used for the -10 winner bonus and the extra -5 exact winner bonus.
                     </div>
                     <div className="settings-row">
                       <select
@@ -979,19 +1179,13 @@ function GolfPoolPage() {
                         Save
                       </button>
                     </div>
-                    {settings.tournamentWinner ? (
-                      <div className="winner-current">
-                        ✅ Champion: {settings.tournamentWinner} - -10 bonus applied to anyone who picked them
-                      </div>
-                    ) : null}
                   </div>
                 </div>
 
                 <div className="card">
                   <h2>📝 Manual Score Override</h2>
                   <p className="admin-help">
-                    ESPN scores are pulled automatically. Use this only to override.
-                    Enter to-par integers (-5, 0, +3).
+                    Set the official to-par score and status for any golfer you want to override.
                   </p>
 
                   {adminScoresMessage ? (
@@ -1000,17 +1194,16 @@ function GolfPoolPage() {
                     </div>
                   ) : null}
 
-                  {FIELD.map((name) => {
-                    const key = safeId(name)
-                    const score = adminScoresDraft[name] ?? { topar: null, mc: false }
+                  {poolGolfers.map((name) => {
+                    const score = adminScoresDraft[name] ?? { topar: null, status: 'active' as PlayerStatus }
 
                     return (
-                      <div key={`admin-score-${key}`} className="admin-grid">
-                        <div className="admin-golfer-name">{TOP5.includes(name as (typeof TOP5)[number]) ? '⭐ ' : ''}{name}</div>
+                      <div key={`admin-score-${safeId(name)}`} className="admin-grid">
+                        <div className="admin-golfer-name">{name}</div>
                         <input
                           type="number"
-                          min={-20}
-                          max={40}
+                          min={-40}
+                          max={60}
                           placeholder="To par"
                           value={score.topar ?? ''}
                           onChange={(event) => {
@@ -1020,28 +1213,28 @@ function GolfPoolPage() {
                               [name]: {
                                 ...current[name],
                                 topar: value === '' ? null : Number.parseInt(value, 10),
-                                mc: current[name]?.mc ?? false,
+                                status: current[name]?.status ?? 'active',
                               },
                             }))
                           }}
                         />
-                        <label className="mc-label">
-                          <input
-                            type="checkbox"
-                            checked={score.mc}
-                            onChange={(event) => {
-                              setAdminScoresDraft((current) => ({
-                                ...current,
-                                [name]: {
-                                  ...current[name],
-                                  mc: event.target.checked,
-                                  topar: current[name]?.topar ?? null,
-                                },
-                              }))
-                            }}
-                          />
-                          MC
-                        </label>
+                        <select
+                          value={score.status}
+                          onChange={(event) => {
+                            setAdminScoresDraft((current) => ({
+                              ...current,
+                              [name]: {
+                                ...current[name],
+                                topar: current[name]?.topar ?? null,
+                                status: event.target.value as PlayerStatus,
+                              },
+                            }))
+                          }}
+                        >
+                          {PLAYER_STATUS_OPTIONS.map((option) => (
+                            <option key={`${name}-${option.value}`} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
                       </div>
                     )
                   })}
@@ -1069,8 +1262,12 @@ function GolfPoolPage() {
                       <div key={`entry-admin-${entry.id}`} className="entry-row">
                         <div>
                           <div className="entry-row-name">{entry.name}</div>
-                          <div className="entry-row-picks">{[entry.pick1, entry.pick2, entry.pick3, entry.pick4].join(' · ')}</div>
-                          <div className="entry-row-tb">🎯 Tiebreaker: {entry.tiebreaker !== null ? fmtTopar(entry.tiebreaker) : '—'}</div>
+                          <div className="entry-row-picks">
+                            {[entry.pick1, entry.pick2, entry.pick3, entry.pick4].join(' · ')}
+                          </div>
+                          <div className="entry-row-tb">
+                            Winner: {entry.winnerPick ?? '—'} · Alternate: {entry.alternate ?? '—'} · Tiebreaker: {formatSubmittedTiebreaker(entry.tiebreaker)}
+                          </div>
                         </div>
                         <button
                           type="button"
@@ -1094,10 +1291,124 @@ function GolfPoolPage() {
       </main>
 
       <footer className="site-footer">
-        © 2026 Bill Engmann &amp; Nevin Wildermuth. All rights reserved.
+        © 2026 Bill Engmann &amp; Nevin Wildermuth. Final standings update.
       </footer>
     </>
   )
+}
+
+function compareEntries(
+  a: {
+    total: number | null
+    tiebreakDistance: number | null
+    alternateScore: number | null
+    name: string
+  },
+  b: {
+    total: number | null
+    tiebreakDistance: number | null
+    alternateScore: number | null
+    name: string
+  },
+): number {
+  if (a.total === null && b.total === null) return a.name.localeCompare(b.name)
+  if (a.total === null) return 1
+  if (b.total === null) return -1
+  if (a.total !== b.total) return a.total - b.total
+
+  const tiebreak = compareNullableNumbers(a.tiebreakDistance, b.tiebreakDistance)
+  if (tiebreak !== 0) return tiebreak
+
+  const alternate = compareNullableNumbers(a.alternateScore, b.alternateScore)
+  if (alternate !== 0) return alternate
+
+  return a.name.localeCompare(b.name)
+}
+
+function compareTiebreakRows(
+  a: {
+    rank: number | null
+    tiebreakDistance: number | null
+    alternateScore: number | null
+    name: string
+  },
+  b: {
+    rank: number | null
+    tiebreakDistance: number | null
+    alternateScore: number | null
+    name: string
+  },
+): number {
+  const rankCompare = compareNullableNumbers(a.rank, b.rank)
+  if (rankCompare !== 0) return rankCompare
+
+  const distanceCompare = compareNullableNumbers(a.tiebreakDistance, b.tiebreakDistance)
+  if (distanceCompare !== 0) return distanceCompare
+
+  const alternateCompare = compareNullableNumbers(a.alternateScore, b.alternateScore)
+  if (alternateCompare !== 0) return alternateCompare
+
+  return a.name.localeCompare(b.name)
+}
+
+function compareNullableNumbers(a: number | null, b: number | null): number {
+  if (a === null && b === null) return 0
+  if (a === null) return 1
+  if (b === null) return -1
+  return a - b
+}
+
+function sortPoolRows(a: EffectivePoolScore, b: EffectivePoolScore): number {
+  const scoreCompare = compareNullableNumbers(a.effectiveTopar, b.effectiveTopar)
+  if (scoreCompare !== 0) return scoreCompare
+  return a.name.localeCompare(b.name)
+}
+
+function toPlayerStatus(statusName: string, roundsTracked: number): PlayerStatus {
+  if (statusName === 'STATUS_MISSED_CUT' || statusName === 'STATUS_CUT') {
+    return 'missed_cut'
+  }
+
+  if (statusName.toUpperCase().includes('WITHDRAW')) {
+    return roundsTracked >= 3 ? 'withdrawn_late' : 'withdrawn_early'
+  }
+
+  return 'active'
+}
+
+function statusLabel(status: PlayerStatus): string {
+  switch (status) {
+    case 'missed_cut':
+      return 'MC'
+    case 'withdrawn_early':
+      return 'WD R1/R2'
+    case 'withdrawn_late':
+      return 'WD R3/R4'
+    default:
+      return 'Active'
+  }
+}
+
+function statusBadgeClass(status: PlayerStatus): string {
+  switch (status) {
+    case 'missed_cut':
+      return 'badge-red'
+    case 'withdrawn_early':
+    case 'withdrawn_late':
+      return 'badge-amber'
+    default:
+      return 'badge-green'
+  }
+}
+
+function formatSubmittedTiebreaker(value: number | null): string {
+  if (value === null || value === undefined) return '—'
+  return Math.abs(value) > 100 ? `${value}` : fmtTopar(value)
+}
+
+function formatOffBy(value: number | null): string {
+  if (value === null || value === undefined) return '—'
+  return `${value}`
 }
 
 function safeId(name: string): string {
@@ -1107,32 +1418,9 @@ function safeId(name: string): string {
     .replace(/[^a-zA-Z0-9]/g, '_')
 }
 
-function renderPreTournamentMessage(entryCount: number): string {
-  const daysUntil = Math.ceil((TOURNAMENT_START.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24))
-  if (daysUntil > 0) {
-    return `Tournament starts Thursday, April 9 · ${daysUntil} day${daysUntil === 1 ? '' : 's'} away. ${entryCount} ${entryCount === 1 ? 'entry' : 'entries'} submitted.`
-  }
-
-  return `Tournament starts today. ${entryCount} ${entryCount === 1 ? 'entry' : 'entries'} submitted.`
-}
-
 function toparClass(value: number | null | undefined): string {
   if (value === null || value === undefined) return 'score-even'
   if (value < 0) return 'score-under'
   if (value > 0) return 'score-over'
   return 'score-even'
-}
-
-function sortScores(a: string, b: string, scores: Record<string, LiveScore>): number {
-  const scoreA = scores[a]
-  const scoreB = scores[b]
-
-  const toParA = scoreA?.topar
-  const toParB = scoreB?.topar
-
-  if (toParA === null || toParA === undefined) return 1
-  if (toParB === null || toParB === undefined) return -1
-  if (scoreA?.mc && !scoreB?.mc) return 1
-  if (!scoreA?.mc && scoreB?.mc) return -1
-  return toParA - toParB
 }

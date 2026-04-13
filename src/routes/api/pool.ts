@@ -4,10 +4,13 @@ import { createFileRoute } from '@tanstack/react-router'
 import {
   DEFAULT_SETTINGS,
   FIELD,
+  PLAYER_STATUS_OPTIONS,
   SEEDED_ENTRIES,
   SEEDED_MANUAL_SCORES,
+  SEEDED_SETTINGS,
   type Entry,
   type ManualScore,
+  type PlayerStatus,
   type PoolSettings,
 } from '@/lib/golf-pool-data'
 
@@ -35,21 +38,16 @@ type BodyPayload =
       scores: Record<string, ManualScore>
     }
 
-const store = getStore({
-  name: 'golf-pool',
-  consistency: 'strong',
-})
-
 const ENTRIES_KEY = 'entries'
 const SETTINGS_KEY = 'settings'
 const SCORES_KEY = 'scores'
+const VALID_STATUSES = new Set<PlayerStatus>(PLAYER_STATUS_OPTIONS.map((option) => option.value))
 
 export const Route = createFileRoute('/api/pool')({
   server: {
     handlers: {
       GET: async () => {
-        const state = await loadState()
-        return Response.json(state)
+        return Response.json(await loadState())
       },
       POST: async ({ request }) => {
         const body = (await request.json()) as BodyPayload
@@ -64,7 +62,12 @@ export const Route = createFileRoute('/api/pool')({
             }
 
             const entries = await getEntries()
-            const normalizedName = body.entry.name.trim()
+            const sanitized = sanitizeEntryDraft(body.entry)
+            if (!sanitized) {
+              return Response.json({ error: 'Invalid entry data' }, { status: 400 })
+            }
+
+            const normalizedName = sanitized.name.trim()
             const existingIndex = entries.findIndex(
               (entry) => entry.name.toLowerCase() === normalizedName.toLowerCase(),
             )
@@ -73,36 +76,45 @@ export const Route = createFileRoute('/api/pool')({
               const current = entries[existingIndex]
               entries[existingIndex] = {
                 ...current,
-                ...body.entry,
+                ...sanitized,
                 name: normalizedName,
               }
             } else {
               entries.push({
-                ...body.entry,
+                ...sanitized,
                 id: crypto.randomUUID(),
                 name: normalizedName,
                 createdAt: new Date().toISOString(),
               })
             }
 
-            await saveEntries(entries)
+            if (!(await writeStoreJSON(ENTRIES_KEY, entries))) {
+              return Response.json({ error: 'Unable to save entries right now' }, { status: 503 })
+            }
+
             return Response.json(await loadState())
           }
 
           case 'delete-entry': {
             const nextEntries = (await getEntries()).filter((entry) => entry.id !== body.id)
-            await saveEntries(nextEntries)
+            if (!(await writeStoreJSON(ENTRIES_KEY, nextEntries))) {
+              return Response.json({ error: 'Unable to delete entry right now' }, { status: 503 })
+            }
+
             return Response.json(await loadState())
           }
 
           case 'save-settings': {
             const current = await getSettings()
-            const merged: PoolSettings = {
+            const merged = normalizeSettings({
               ...current,
               ...body.settings,
+            })
+
+            if (!(await writeStoreJSON(SETTINGS_KEY, merged))) {
+              return Response.json({ error: 'Unable to save settings right now' }, { status: 503 })
             }
 
-            await store.setJSON(SETTINGS_KEY, merged)
             return Response.json(await loadState())
           }
 
@@ -111,16 +123,13 @@ export const Route = createFileRoute('/api/pool')({
             for (const name of FIELD) {
               const score = body.scores?.[name]
               if (!score) continue
-              sanitized[name] = {
-                topar:
-                  score.topar === null || Number.isNaN(score.topar)
-                    ? null
-                    : Number(score.topar),
-                mc: Boolean(score.mc),
-              }
+              sanitized[name] = normalizeManualScore(score)
             }
 
-            await store.setJSON(SCORES_KEY, sanitized)
+            if (!(await writeStoreJSON(SCORES_KEY, sanitized))) {
+              return Response.json({ error: 'Unable to save scores right now' }, { status: 503 })
+            }
+
             return Response.json(await loadState())
           }
 
@@ -146,60 +155,165 @@ async function loadState(): Promise<PoolState> {
   }
 }
 
+function getPoolStore() {
+  return getStore({ name: 'golf-pool' })
+}
+
+async function readStoreJSON<T>(key: string): Promise<T | undefined> {
+  try {
+    const value = await getPoolStore().get(key, { type: 'json' })
+    return value === null || value === undefined ? undefined : (value as T)
+  } catch (error) {
+    console.error(`[pool] Unable to read ${key} from Netlify Blobs`, error)
+    return undefined
+  }
+}
+
+async function writeStoreJSON(key: string, value: unknown): Promise<boolean> {
+  try {
+    await getPoolStore().setJSON(key, value)
+    return true
+  } catch (error) {
+    console.error(`[pool] Unable to write ${key} to Netlify Blobs`, error)
+    return false
+  }
+}
+
 async function getEntries(): Promise<Entry[]> {
-  const entries = await store.get(ENTRIES_KEY, { type: 'json' })
-  if (entries === null || entries === undefined) return SEEDED_ENTRIES
+  const entries = await readStoreJSON<unknown[]>(ENTRIES_KEY)
+  if (!entries) return SEEDED_ENTRIES
   if (!Array.isArray(entries)) return []
 
   return entries
-    .filter((entry): entry is Entry => Boolean(entry && typeof entry === 'object'))
+    .map((entry) => normalizeEntry(entry))
+    .filter((entry): entry is Entry => entry !== null)
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 }
 
-async function saveEntries(entries: Entry[]): Promise<void> {
-  await store.setJSON(ENTRIES_KEY, entries)
-}
-
 async function getSettings(): Promise<PoolSettings> {
-  const settings = await store.get(SETTINGS_KEY, { type: 'json' })
+  const settings = await readStoreJSON<unknown>(SETTINGS_KEY)
   if (!settings || typeof settings !== 'object') {
-    return { ...DEFAULT_SETTINGS }
+    return { ...SEEDED_SETTINGS }
   }
 
+  return normalizeSettings(settings as Partial<PoolSettings>)
+}
+
+async function getManualScores(): Promise<Record<string, ManualScore>> {
+  const manualScores = await readStoreJSON<Record<string, unknown>>(SCORES_KEY)
+  if (!manualScores || typeof manualScores !== 'object') return SEEDED_MANUAL_SCORES
+
+  const normalized: Record<string, ManualScore> = {}
+  for (const name of FIELD) {
+    const rawScore = manualScores[name]
+    if (!rawScore) continue
+    normalized[name] = normalizeManualScore(rawScore)
+  }
+
+  return Object.keys(normalized).length > 0 ? normalized : SEEDED_MANUAL_SCORES
+}
+
+function normalizeEntry(raw: unknown): Entry | null {
+  if (!raw || typeof raw !== 'object') return null
+
+  const record = raw as Partial<Entry>
+  const draft = sanitizeEntryDraft({
+    name: typeof record.name === 'string' ? record.name : '',
+    pick1: typeof record.pick1 === 'string' ? record.pick1 : '',
+    pick2: typeof record.pick2 === 'string' ? record.pick2 : '',
+    pick3: typeof record.pick3 === 'string' ? record.pick3 : '',
+    pick4: typeof record.pick4 === 'string' ? record.pick4 : '',
+    winnerPick: typeof record.winnerPick === 'string' ? record.winnerPick : null,
+    alternate: typeof record.alternate === 'string' ? record.alternate : null,
+    tiebreaker:
+      typeof record.tiebreaker === 'number'
+        ? record.tiebreaker
+        : typeof record.tiebreaker === 'string'
+          ? Number.parseInt(record.tiebreaker, 10)
+          : null,
+  })
+
+  if (!draft) return null
+
+  return {
+    ...draft,
+    id: typeof record.id === 'string' ? record.id : crypto.randomUUID(),
+    createdAt:
+      typeof record.createdAt === 'string' && record.createdAt.trim().length > 0
+        ? record.createdAt
+        : new Date().toISOString(),
+  }
+}
+
+function sanitizeEntryDraft(entry: Omit<Entry, 'id' | 'createdAt'>): Omit<Entry, 'id' | 'createdAt'> | null {
+  const picks = [entry.pick1, entry.pick2, entry.pick3, entry.pick4].map((pick) => pick.trim())
+  if (entry.name.trim().length === 0 || picks.some((pick) => !FIELD.includes(pick))) {
+    return null
+  }
+
+  const uniquePicks = new Set(picks)
+  if (uniquePicks.size !== picks.length) return null
+
+  const winnerPick =
+    typeof entry.winnerPick === 'string' && picks.includes(entry.winnerPick.trim())
+      ? entry.winnerPick.trim()
+      : null
+
+  const alternateCandidate = typeof entry.alternate === 'string' ? entry.alternate.trim() : ''
+  const alternate =
+    alternateCandidate.length > 0
+    && FIELD.includes(alternateCandidate)
+    && !picks.includes(alternateCandidate)
+      ? alternateCandidate
+      : null
+
+  const parsedTiebreaker =
+    entry.tiebreaker === null || entry.tiebreaker === undefined
+      ? null
+      : Number(entry.tiebreaker)
+
+  return {
+    name: entry.name.trim(),
+    pick1: picks[0],
+    pick2: picks[1],
+    pick3: picks[2],
+    pick4: picks[3],
+    winnerPick,
+    alternate,
+    tiebreaker: Number.isNaN(parsedTiebreaker) ? null : parsedTiebreaker,
+  }
+}
+
+function normalizeSettings(settings: Partial<PoolSettings>): PoolSettings {
   return {
     picksOpen:
       typeof settings.picksOpen === 'boolean'
         ? settings.picksOpen
-        : DEFAULT_SETTINGS.picksOpen,
+        : SEEDED_SETTINGS.picksOpen,
     tournamentWinner:
-      typeof settings.tournamentWinner === 'string'
+      typeof settings.tournamentWinner === 'string' && settings.tournamentWinner.trim().length > 0
         ? settings.tournamentWinner
         : null,
     cutLine:
-      typeof settings.cutLine === 'number'
+      typeof settings.cutLine === 'number' && !Number.isNaN(settings.cutLine)
         ? settings.cutLine
         : DEFAULT_SETTINGS.cutLine,
   }
 }
 
-async function getManualScores(): Promise<Record<string, ManualScore>> {
-  const manualScores = await store.get(SCORES_KEY, { type: 'json' })
-  if (manualScores === null || manualScores === undefined) return SEEDED_MANUAL_SCORES
-  if (!manualScores || typeof manualScores !== 'object') return {}
+function normalizeManualScore(rawScore: unknown): ManualScore {
+  const record = rawScore as Partial<ManualScore & { mc?: boolean }>
+  const status = VALID_STATUSES.has(record.status as PlayerStatus)
+    ? (record.status as PlayerStatus)
+    : record.mc
+      ? 'missed_cut'
+      : 'active'
 
-  const normalized: Record<string, ManualScore> = {}
-  for (const name of FIELD) {
-    const rawScore = (manualScores as Record<string, ManualScore | undefined>)[name]
-    if (!rawScore) continue
-
-    normalized[name] = {
-      topar:
-        rawScore.topar === null || rawScore.topar === undefined
-          ? null
-          : Number(rawScore.topar),
-      mc: Boolean(rawScore.mc),
-    }
+  return {
+    topar:
+      record.topar === null || record.topar === undefined || Number.isNaN(Number(record.topar))
+        ? null
+        : Number(record.topar),
+    status,
   }
-
-  return normalized
 }

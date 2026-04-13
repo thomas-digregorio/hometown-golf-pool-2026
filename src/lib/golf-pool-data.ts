@@ -1,3 +1,5 @@
+export type PlayerStatus = 'active' | 'missed_cut' | 'withdrawn_early' | 'withdrawn_late'
+
 export type Entry = {
   id: string
   name: string
@@ -5,6 +7,8 @@ export type Entry = {
   pick2: string
   pick3: string
   pick4: string
+  winnerPick: string | null
+  alternate: string | null
   tiebreaker: number | null
   createdAt: string
 }
@@ -17,14 +21,25 @@ export type PoolSettings = {
 
 export type ManualScore = {
   topar: number | null
-  mc: boolean
+  status: PlayerStatus
 }
 
 type SeedEntryInput = {
   name: string
   tiebreaker: number
   picks: [string, string, string, string]
+  winnerPick: string
+  alternate: string
 }
+
+export const TOURNAMENT_PAR = 72 * 4
+
+export const PLAYER_STATUS_OPTIONS: Array<{ label: string; value: PlayerStatus }> = [
+  { label: 'Active', value: 'active' },
+  { label: 'Missed cut', value: 'missed_cut' },
+  { label: 'WD (rounds 1-2)', value: 'withdrawn_early' },
+  { label: 'WD (rounds 3-4)', value: 'withdrawn_late' },
+]
 
 export const TOP5 = [
   'Scottie Scheffler',
@@ -201,9 +216,20 @@ export function parseHole(thru: string | null | undefined): string | null {
   return normalized
 }
 
+export function normalizeTiebreakerGuess(value: number | null | undefined): number | null {
+  if (value === null || value === undefined || Number.isNaN(value)) return null
+  return Math.abs(value) > 100 ? value : TOURNAMENT_PAR + value
+}
+
 export const DEFAULT_SETTINGS: PoolSettings = {
   picksOpen: false,
   tournamentWinner: null,
+  cutLine: 4,
+}
+
+export const SEEDED_SETTINGS: PoolSettings = {
+  picksOpen: false,
+  tournamentWinner: 'Rory McIlroy',
   cutLine: 4,
 }
 
@@ -212,56 +238,78 @@ const SEEDED_ENTRY_INPUTS: SeedEntryInput[] = [
     name: 'Digoy',
     tiebreaker: -12,
     picks: ['Jon Rahm', 'Robert MacIntyre', 'Akshay Bhatia', 'Jacob Bridgeman'],
+    winnerPick: 'Jon Rahm',
+    alternate: 'Rory McIlroy',
   },
   {
     name: 'Elder',
     tiebreaker: -12,
     picks: ['Scottie Scheffler', 'Ludvig Åberg', 'Jordan Spieth', 'Justin Rose'],
+    winnerPick: 'Scottie Scheffler',
+    alternate: 'Bryson DeChambeau',
   },
   {
     name: 'Nerd*',
     tiebreaker: -13,
     picks: ['Scottie Scheffler', 'Ludvig Åberg', 'Collin Morikawa', 'Haotong Li'],
+    winnerPick: 'Scottie Scheffler',
+    alternate: 'Xander Schauffele',
   },
   {
     name: 'AT-CAM',
     tiebreaker: -7,
     picks: ['Scottie Scheffler', 'Ludvig Åberg', 'Collin Morikawa', 'J.J. Spaun'],
+    winnerPick: 'Scottie Scheffler',
+    alternate: 'Tommy Fleetwood',
   },
   {
     name: 'Austin*',
     tiebreaker: -13,
     picks: ['Scottie Scheffler', 'Cameron Young', 'Collin Morikawa', 'Jordan Spieth'],
+    winnerPick: 'Scottie Scheffler',
+    alternate: 'Matt Fitzpatrick',
   },
   {
     name: 'G-Spot',
     tiebreaker: -13,
     picks: ['Xander Schauffele', 'Matt Fitzpatrick', 'Patrick Reed', 'Corey Conners'],
+    winnerPick: 'Xander Schauffele',
+    alternate: 'Russell Henley',
   },
   {
     name: 'Smelly',
     tiebreaker: -11,
     picks: ['Jon Rahm', 'Hideki Matsuyama', 'Patrick Reed', 'Corey Conners'],
+    winnerPick: 'Jon Rahm',
+    alternate: 'Cameron Young',
   },
   {
     name: 'Alejandro',
     tiebreaker: -13,
     picks: ['Scottie Scheffler', 'Tommy Fleetwood', 'Min Woo Lee', 'Collin Morikawa'],
+    winnerPick: 'Scottie Scheffler',
+    alternate: 'Justin Rose',
   },
   {
     name: 'UM-CAM',
     tiebreaker: -13,
     picks: ['Scottie Scheffler', 'Matt Fitzpatrick', 'Russell Henley', 'Corey Conners'],
+    winnerPick: 'Scottie Scheffler',
+    alternate: 'Patrick Reed',
   },
   {
     name: 'Cat Linden',
     tiebreaker: -11,
     picks: ['Xander Schauffele', 'Tommy Fleetwood', 'Justin Rose', 'Akshay Bhatia'],
+    winnerPick: 'Xander Schauffele',
+    alternate: 'Jon Rahm',
   },
   {
     name: 'Sir Atwell',
     tiebreaker: -9,
     picks: ['Matt Fitzpatrick', 'Scottie Scheffler', 'Si Woo Kim', 'Chris Gotterup'],
+    winnerPick: 'Matt Fitzpatrick',
+    alternate: 'Haotong Li',
   },
 ]
 
@@ -272,33 +320,35 @@ export const SEEDED_ENTRIES: Entry[] = SEEDED_ENTRY_INPUTS.map((entry, index) =>
   pick2: entry.picks[1],
   pick3: entry.picks[2],
   pick4: entry.picks[3],
+  winnerPick: entry.winnerPick,
+  alternate: entry.alternate,
   tiebreaker: entry.tiebreaker,
   createdAt: new Date(Date.UTC(2026, 3, 8, 12, index)).toISOString(),
 }))
 
 export const SEEDED_MANUAL_SCORES: Record<string, ManualScore> = {
-  'Scottie Scheffler': { topar: -2, mc: false },
-  'Rory McIlroy': { topar: -6, mc: false },
-  'Bryson DeChambeau': { topar: 5, mc: false },
-  'Jon Rahm': { topar: 4, mc: false },
-  'Xander Schauffele': { topar: -2, mc: false },
-  'Robert MacIntyre': { topar: 7, mc: false },
-  'Matt Fitzpatrick': { topar: 2, mc: false },
-  'Ludvig Åberg': { topar: 1, mc: false },
-  'Tommy Fleetwood': { topar: -1, mc: false },
-  'Cameron Young': { topar: 1, mc: false },
-  'Hideki Matsuyama': { topar: 1, mc: false },
-  'Patrick Reed': { topar: -3, mc: false },
-  'Jordan Spieth': { topar: 0, mc: false },
-  'Corey Conners': { topar: 2, mc: false },
-  'Russell Henley': { topar: 1, mc: false },
-  'Akshay Bhatia': { topar: 0, mc: false },
-  'Min Woo Lee': { topar: 11, mc: false },
-  'Collin Morikawa': { topar: 2, mc: false },
-  'J.J. Spaun': { topar: 6, mc: false },
-  'Si Woo Kim': { topar: 4, mc: false },
-  'Chris Gotterup': { topar: -2, mc: false },
-  'Justin Rose': { topar: -4, mc: false },
-  'Jacob Bridgeman': { topar: 1, mc: false },
-  'Haotong Li': { topar: 0, mc: false },
+  'Scottie Scheffler': { topar: -11, status: 'active' },
+  'Rory McIlroy': { topar: -22, status: 'active' },
+  'Bryson DeChambeau': { topar: 14, status: 'active' },
+  'Jon Rahm': { topar: 1, status: 'active' },
+  'Xander Schauffele': { topar: -8, status: 'active' },
+  'Robert MacIntyre': { topar: 15, status: 'active' },
+  'Matt Fitzpatrick': { topar: -4, status: 'active' },
+  'Ludvig Åberg': { topar: -3, status: 'active' },
+  'Tommy Fleetwood': { topar: 0, status: 'active' },
+  'Cameron Young': { topar: -10, status: 'active' },
+  'Hideki Matsuyama': { topar: -5, status: 'active' },
+  'Patrick Reed': { topar: -5, status: 'active' },
+  'Jordan Spieth': { topar: -5, status: 'active' },
+  'Corey Conners': { topar: 6, status: 'active' },
+  'Russell Henley': { topar: -10, status: 'active' },
+  'Akshay Bhatia': { topar: 14, status: 'active' },
+  'Min Woo Lee': { topar: 19, status: 'active' },
+  'Collin Morikawa': { topar: -9, status: 'active' },
+  'J.J. Spaun': { topar: 13, status: 'active' },
+  'Si Woo Kim': { topar: 4, status: 'active' },
+  'Chris Gotterup': { topar: -2, status: 'active' },
+  'Justin Rose': { topar: -10, status: 'active' },
+  'Jacob Bridgeman': { topar: 2, status: 'active' },
+  'Haotong Li': { topar: 1, status: 'active' },
 }
