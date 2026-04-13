@@ -298,7 +298,7 @@ const SEEDED_ENTRY_INPUTS: SeedEntryInput[] = [
     alternate: 'Patrick Reed',
   },
   {
-    name: 'Cat Linden',
+    name: 'Matt Linden',
     tiebreaker: -11,
     picks: ['Xander Schauffele', 'Tommy Fleetwood', 'Justin Rose', 'Akshay Bhatia'],
     winnerPick: 'Xander Schauffele',

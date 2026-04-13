@@ -159,6 +159,11 @@ function GolfPoolPage() {
   }, [])
 
   const fetchLiveScores = useCallback(async (manualOverride: Record<string, ManualScore>) => {
+    if (new Date() > TOURNAMENT_END) {
+      applyManualScores(manualOverride, 'final snapshot')
+      return
+    }
+
     try {
       const response = await fetch('https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard', {
         cache: 'no-store',
@@ -234,7 +239,7 @@ function GolfPoolPage() {
       setGolferScores(nextScores)
       setLastUpdated(`Updated: ${new Date().toLocaleTimeString()} · ESPN live`)
     } catch {
-      applyManualScores(manualOverride, new Date() > TOURNAMENT_END ? 'final snapshot' : 'manual override')
+      applyManualScores(manualOverride, 'manual override')
     }
   }, [applyManualScores])
 
