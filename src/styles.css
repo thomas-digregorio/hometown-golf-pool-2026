@@ -62,10 +62,8 @@ header {
 
 .header-title h1 {
   margin: 0;
-  font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
-  font-size: clamp(1.6rem, 1.8vw, 2.3rem);
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
+  font-size: clamp(1.7rem, 1.9vw, 2.35rem);
+  letter-spacing: -0.02em;
 }
 
 .subtitle {
@@ -115,7 +113,7 @@ header {
 }
 
 .main {
-  max-width: 1380px;
+  max-width: 1120px;
   margin: 0 auto;
   padding: 24px 18px 40px;
 }
@@ -168,8 +166,8 @@ header {
 
 .card h2 {
   margin: 0;
-  font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
   font-size: 1.35rem;
+  font-weight: 800;
 }
 
 .section-head {
@@ -209,6 +207,199 @@ header {
   color: #835d00;
   font-weight: 600;
   font-size: 0.86rem;
+}
+
+.leaderboard-card,
+.scores-card {
+  overflow-x: auto;
+}
+
+.leaderboard-table {
+  width: 100%;
+  min-width: 960px;
+  border-collapse: collapse;
+}
+
+.leaderboard-table th {
+  background: #f2f4f7;
+  color: #667085;
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 14px 16px;
+  text-align: left;
+}
+
+.leaderboard-table th:nth-child(3),
+.leaderboard-table th:nth-child(4),
+.leaderboard-table th:nth-child(5) {
+  text-align: center;
+}
+
+.leaderboard-table td {
+  padding: 18px 16px;
+  border-top: 1px solid rgba(19, 99, 70, 0.1);
+  vertical-align: top;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.leaderboard-row.leader td {
+  background: rgba(255, 243, 200, 0.5);
+}
+
+.leaderboard-row.leader td:first-child {
+  border-left: 4px solid rgba(210, 161, 30, 0.9);
+}
+
+.leaderboard-pos {
+  width: 80px;
+  text-align: center;
+  font-size: 2rem;
+  font-weight: 800;
+  color: #0f2c4a;
+  vertical-align: middle !important;
+}
+
+.leaderboard-entry {
+  min-width: 0;
+}
+
+.leaderboard-name {
+  font-size: 1.12rem;
+  font-weight: 800;
+  color: #0a2540;
+}
+
+.leaderboard-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.leaderboard-pick-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: #f7f8fb;
+  border: 1px solid #dfe5ef;
+  color: #667085;
+  font-size: 0.86rem;
+  white-space: nowrap;
+}
+
+.leaderboard-pick-chip.top5 {
+  background: rgba(255, 243, 200, 0.72);
+  border-color: rgba(210, 161, 30, 0.5);
+  color: #8f6b0a;
+}
+
+.leaderboard-pick-chip.winner {
+  background: rgba(232, 246, 235, 0.92);
+  border-color: rgba(42, 122, 87, 0.34);
+  color: var(--green-900);
+}
+
+.leaderboard-pick-chip.penalty {
+  background: rgba(255, 240, 216, 0.95);
+  border-color: rgba(201, 123, 0, 0.3);
+  color: var(--amber-500);
+}
+
+.leaderboard-adjustments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.leaderboard-adjustment-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 5px 10px;
+  background: rgba(232, 242, 236, 0.95);
+  border: 1px solid rgba(19, 99, 70, 0.15);
+  color: var(--green-900);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.leaderboard-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.leaderboard-score,
+.leaderboard-diff,
+.leaderboard-payout {
+  text-align: center;
+  vertical-align: middle !important;
+}
+
+.leaderboard-score {
+  font-size: 2.1rem;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+}
+
+.leaderboard-diff,
+.leaderboard-payout {
+  font-size: 1.35rem;
+  font-weight: 800;
+}
+
+.leaderboard-diff {
+  color: var(--muted);
+}
+
+.leaderboard-diff.over {
+  color: var(--red-500);
+}
+
+.scores-help {
+  margin: 14px 0 18px;
+  color: var(--muted);
+  font-size: 0.96rem;
+  line-height: 1.55;
+}
+
+.scores-table {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) 110px 90px 120px;
+  min-width: 760px;
+}
+
+.scores-table-head {
+  background: #f2f4f7;
+  color: #667085;
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 12px 12px;
+}
+
+.scores-table-row {
+  display: contents;
+}
+
+.scores-table-cell {
+  padding: 14px 12px;
+  border-top: 1px solid rgba(19, 99, 70, 0.1);
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.scores-table-cell.golfer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .board-shell {
@@ -889,6 +1080,34 @@ select:focus {
 
   .tabs {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .leaderboard-card,
+  .scores-card {
+    padding: 0;
+  }
+
+  .leaderboard-table {
+    min-width: 860px;
+  }
+
+  .scores-table {
+    min-width: 680px;
+  }
+
+  .leaderboard-pos {
+    font-size: 1.5rem;
+  }
+
+  .leaderboard-score,
+  .leaderboard-diff,
+  .leaderboard-payout {
+    font-size: 1.1rem;
+  }
+
+  .leaderboard-meta {
+    flex-direction: column;
+    gap: 6px;
   }
 
   .players-table,

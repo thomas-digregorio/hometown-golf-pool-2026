@@ -61,7 +61,6 @@ type EntryScoreDetail = {
 
 const WINNER_BONUS = -10
 const EXACT_WINNER_BONUS = -5
-const TOURNAMENT_START = new Date('2026-04-09T07:00:00-04:00')
 const TOURNAMENT_END = new Date('2026-04-12T20:00:00-04:00')
 const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD ?? 'CokeZero2026$'
 
@@ -160,11 +159,6 @@ function GolfPoolPage() {
   }, [])
 
   const fetchLiveScores = useCallback(async (manualOverride: Record<string, ManualScore>) => {
-    if (new Date() > TOURNAMENT_END) {
-      applyManualScores(manualOverride, 'final snapshot')
-      return
-    }
-
     try {
       const response = await fetch('https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard', {
         cache: 'no-store',
@@ -233,11 +227,14 @@ function GolfPoolPage() {
         }
       }
 
-      setTournamentLive(true)
+      setTournamentLive((mastersEvent?.competitions?.[0]?.competitors ?? []).some((competitor) => {
+        const displayValue = competitor.status?.displayValue?.toLowerCase() ?? ''
+        return displayValue.includes('thru') || /^\d+$/.test(displayValue)
+      }))
       setGolferScores(nextScores)
       setLastUpdated(`Updated: ${new Date().toLocaleTimeString()} · ESPN live`)
     } catch {
-      applyManualScores(manualOverride, 'manual override')
+      applyManualScores(manualOverride, new Date() > TOURNAMENT_END ? 'final snapshot' : 'manual override')
     }
   }, [applyManualScores])
 
@@ -483,18 +480,23 @@ function GolfPoolPage() {
     }
   }, [effectivePoolScores, entries, golferScores, settings.tournamentWinner])
 
-  const poolScoreRows = useMemo(() => {
-    return [...poolGolfers]
-      .map((name) => effectivePoolScores[name] ?? {
-        name,
-        rawTopar: null,
-        effectiveTopar: null,
-        status: 'active' as PlayerStatus,
-        thru: null,
-        note: null,
+  const scoreTableRows = useMemo(() => {
+    return FIELD
+      .map((name) => {
+        const raw = golferScores[name]
+        const applied = effectivePoolScores[name]
+
+        return {
+          name,
+          topar: raw?.topar ?? null,
+          status: raw?.status ?? 'active',
+          thru: raw?.thru ?? null,
+          note: applied?.note ?? null,
+        }
       })
-      .sort((a, b) => sortPoolRows(a, b))
-  }, [effectivePoolScores, poolGolfers])
+      .filter((row) => row.topar !== null || row.status !== 'active')
+      .sort((a, b) => sortScoreTableRows(a, b))
+  }, [effectivePoolScores, golferScores])
 
   const submitEntry = useCallback(async () => {
     if (!canSubmitEntry || !settings.picksOpen || entrySubmitting) return
@@ -627,8 +629,8 @@ function GolfPoolPage() {
           <div className="header-title">
             <span className="flag">⛳</span>
             <div>
-              <h1>The Masters 2026 Pool Tracker</h1>
-              <div className="subtitle">Final board, payouts, tiebreakers, and admin controls</div>
+              <h1>Golf Pool 2026</h1>
+              <div className="subtitle">Masters · Augusta National · Apr 9-12</div>
             </div>
           </div>
           {tournamentLive ? (
@@ -649,7 +651,7 @@ function GolfPoolPage() {
             className={`tab ${activeTab === 'leaderboard' ? 'active' : ''}`}
             onClick={() => setActiveTab('leaderboard')}
           >
-            🏆 Final Board
+            🏆 Leaderboard
           </button>
           <button
             type="button"
@@ -663,7 +665,7 @@ function GolfPoolPage() {
             className={`tab ${activeTab === 'scores' ? 'active' : ''}`}
             onClick={() => setActiveTab('scores')}
           >
-            📊 Pool Scores
+            📊 Scores
           </button>
           <button
             type="button"
@@ -690,138 +692,69 @@ function GolfPoolPage() {
                 ↻ Refresh
               </button>
             </div>
+            <div className="card leaderboard-card">
+              <table className="leaderboard-table">
+                <thead>
+                  <tr>
+                    <th>Pos</th>
+                    <th>Participant &amp; Picks</th>
+                    <th>Score</th>
+                    <th>Δ Lead</th>
+                    <th>Payout</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {leaderboardData.rows.map((entry, index) => {
+                    const adjustmentNotes = [
+                      ...entry.details
+                        .filter((detail) => detail.note)
+                        .map((detail) => `${detail.name}: ${detail.note}`),
+                      entry.hasWinnerPick ? 'Winner bonus -10 applied' : null,
+                      entry.exactWinnerHit ? 'Exact winner bonus -5 applied' : null,
+                    ].filter((note): note is string => Boolean(note))
 
-            {settings.tournamentWinner ? (
-              <div className="winner-banner">
-                <strong>Winner:</strong> {settings.tournamentWinner}
-                {leaderboardData.winnerToPar !== null ? ` · ${fmtTopar(leaderboardData.winnerToPar)} / ${leaderboardData.winnerRawScore}` : ''}
-                <span className="winner-banner-note">Entry bonus: -10 if the winner is in your four, plus -5 if your designated winner pick is exact.</span>
-              </div>
-            ) : null}
-
-            <div className="board-shell">
-              <div className="card players-card">
-                <div className="section-head">
-                  <h2>⛳ Pool Players</h2>
-                  <span>{poolScoreRows.length} golfers</span>
-                </div>
-                <div className="players-table">
-                  <div className="players-table-head">#</div>
-                  <div className="players-table-head">Golfer</div>
-                  <div className="players-table-head center">Official</div>
-                  <div className="players-table-head center">Applied</div>
-
-                  {poolScoreRows.map((score, index) => (
-                    <div key={`pool-${score.name}`} className="players-table-row">
-                      <div className="players-table-cell rank">{index + 1}</div>
-                      <div className="players-table-cell golfer">
-                        <span className="golfer-name-inline">
-                          {score.name}
-                          {settings.tournamentWinner === score.name ? <span className="badge badge-champion mini-badge">W</span> : null}
-                          {TOP5.includes(score.name as (typeof TOP5)[number]) ? <span className="badge badge-gold mini-badge">T5</span> : null}
-                        </span>
-                        {score.note ? <div className="sub-note">{score.note}</div> : null}
-                      </div>
-                      <div className={`players-table-cell center ${toparClass(score.rawTopar)}`}>{fmtTopar(score.rawTopar)}</div>
-                      <div className={`players-table-cell center ${toparClass(score.effectiveTopar)}`}>{fmtTopar(score.effectiveTopar)}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="entry-board">
-                {leaderboardData.rows.map((entry) => (
-                  <article key={entry.id} className={`entry-card ${entry.rank === 1 ? 'entry-card-lead' : ''}`}>
-                    <div className="entry-card-header">
-                      <div>
-                        <div className="entry-card-rank">{entry.rank ? `#${entry.rank}` : '—'}</div>
-                        <h3>{entry.name}</h3>
-                      </div>
-                      <div className={`entry-card-total ${toparClass(entry.total)}`}>{fmtTopar(entry.total)}</div>
-                    </div>
-
-                    <div className="entry-card-grid">
-                      {entry.details.map((detail) => (
-                        <div key={`${entry.id}-${detail.name}`} className="entry-pick-row">
-                          <div className={`winner-slot ${detail.isWinnerPick ? 'filled' : ''}`}>{detail.isWinnerPick ? 'W' : ''}</div>
-                          <div className="entry-pick-name">
-                            {detail.name}
-                            {detail.isTournamentWinner ? <span className="badge badge-champion mini-badge">Winner</span> : null}
+                    return (
+                      <tr key={entry.id} className={index === 0 ? 'leaderboard-row leader' : 'leaderboard-row'}>
+                        <td className="leaderboard-pos">{index === 0 ? '🏆' : entry.rank ?? '—'}</td>
+                        <td className="leaderboard-entry">
+                          <div className="leaderboard-name">{entry.name}</div>
+                          <div className="leaderboard-picks">
+                            {entry.details.map((detail) => (
+                              <span
+                                key={`${entry.id}-${detail.name}`}
+                                className={pickChipClassName(detail)}
+                              >
+                                {detail.name} ({fmtTopar(detail.effectiveTopar)})
+                              </span>
+                            ))}
                           </div>
-                          <div className={`entry-pick-score ${toparClass(detail.effectiveTopar)}`}>
-                            {fmtTopar(detail.effectiveTopar)}
+                          {adjustmentNotes.length > 0 ? (
+                            <div className="leaderboard-adjustments">
+                              {adjustmentNotes.map((note) => (
+                                <span key={`${entry.id}-${note}`} className="leaderboard-adjustment-chip">
+                                  {note}
+                                </span>
+                              ))}
+                            </div>
+                          ) : null}
+                          <div className="leaderboard-meta">
+                            <span>Winner pick: {entry.winnerPick ?? '—'}</span>
+                            <span>Alternate: {entry.alternate ?? '—'}{entry.alternateScore !== null ? ` (${fmtTopar(entry.alternateScore)})` : ''}</span>
+                            <span>Tiebreaker: {formatSubmittedTiebreaker(entry.tiebreaker)}</span>
                           </div>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="entry-card-meta">
-                      <div><strong>Alternate:</strong> {entry.alternate ?? '—'} {entry.alternateScore !== null ? `(${fmtTopar(entry.alternateScore)})` : ''}</div>
-                      <div><strong>Tiebreaker:</strong> {formatSubmittedTiebreaker(entry.tiebreaker)}</div>
-                    </div>
-
-                    {(entry.hasWinnerPick || entry.exactWinnerHit) ? (
-                      <div className="bonus-strip">
-                        {entry.hasWinnerPick ? <span>Winner bonus -10</span> : null}
-                        {entry.exactWinnerHit ? <span>Exact winner bonus -5</span> : null}
-                      </div>
-                    ) : null}
-                  </article>
-                ))}
-              </div>
-            </div>
-
-            <div className="board-summary">
-              <div className="card">
-                <div className="section-head">
-                  <h2>🏆 Standings</h2>
-                  <span>$1 per stroke</span>
-                </div>
-                <div className="summary-table">
-                  <div className="summary-table-head">Pos</div>
-                  <div className="summary-table-head">Entry</div>
-                  <div className="summary-table-head center">Score</div>
-                  <div className="summary-table-head center">To Lead</div>
-                  <div className="summary-table-head center">Payout</div>
-
-                  {leaderboardData.rows.map((entry) => (
-                    <div key={`standings-${entry.id}`} className="summary-table-row">
-                      <div className="summary-table-cell rank">{entry.rank ?? '—'}</div>
-                      <div className="summary-table-cell">
-                        {entry.name}
-                        {entry.rank === 1 ? <span className="badge badge-champion mini-badge">Winner</span> : null}
-                      </div>
-                      <div className={`summary-table-cell center ${toparClass(entry.total)}`}>{fmtTopar(entry.total)}</div>
-                      <div className="summary-table-cell center">{entry.difference === null || entry.difference === 0 ? '—' : `+${entry.difference}`}</div>
-                      <div className={`summary-table-cell center ${entry.rank === 1 ? 'payout-win' : 'payout-lose'}`}>
-                        {entry.payout === null ? '—' : entry.rank === 1 ? `+$${entry.payout}` : `-$${entry.payout}`}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="card">
-                <div className="section-head">
-                  <h2>🥇 Tiebreakers</h2>
-                  <span>{leaderboardData.winnerRawScore !== null ? `Actual: ${fmtTopar(leaderboardData.winnerToPar)} / ${leaderboardData.winnerRawScore}` : 'Waiting on winner'}</span>
-                </div>
-                <div className="summary-table">
-                  <div className="summary-table-head">Entry</div>
-                  <div className="summary-table-head center">Guess</div>
-                  <div className="summary-table-head center">Off</div>
-                  <div className="summary-table-head center">Alternate</div>
-
-                  {leaderboardData.tiebreakRows.map((entry) => (
-                    <div key={`tiebreak-${entry.id}`} className="summary-table-row">
-                      <div className="summary-table-cell">{entry.name}</div>
-                      <div className="summary-table-cell center">{formatSubmittedTiebreaker(entry.tiebreaker)}</div>
-                      <div className="summary-table-cell center">{formatOffBy(entry.tiebreakDistance)}</div>
-                      <div className={`summary-table-cell center ${toparClass(entry.alternateScore)}`}>{fmtTopar(entry.alternateScore)}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+                        </td>
+                        <td className={`leaderboard-score ${toparClass(entry.total)}`}>{fmtTopar(entry.total)}</td>
+                        <td className={entry.difference !== null && entry.difference > 0 ? 'leaderboard-diff over' : 'leaderboard-diff'}>
+                          {entry.difference === null || entry.difference === 0 ? '—' : `+${entry.difference}`}
+                        </td>
+                        <td className={index === 0 ? 'leaderboard-payout payout-win' : 'leaderboard-payout payout-lose'}>
+                          {entry.payout === null ? '—' : index === 0 ? `+$${entry.payout}` : `-$${entry.payout}`}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
             </div>
           </section>
         ) : null}
@@ -990,44 +923,35 @@ function GolfPoolPage() {
 
         {activeTab === 'scores' ? (
           <section>
-            <div className="card">
-              <div className="section-head">
-                <h2>📊 Pool Golfer Scores</h2>
-                <span>Applied scoring reflects cut and withdrawal rules.</span>
-              </div>
+            <div className="card scores-card">
+              <h2>📊 Live Golfer Scores</h2>
+              <p className="scores-help">
+                Scores shown as strokes relative to par (E = even, -3 = 3 under, +2 = 2 over).
+                Missed cut and withdrawal statuses update automatically.
+              </p>
 
-              <div className="scores-grid">
-                <div className="sh">Golfer</div>
-                <div className="sh center">Official</div>
-                <div className="sh center">Applied</div>
-                <div className="sh center">Status</div>
-                <div className="sh center">Hole</div>
+              <div className="scores-table">
+                <div className="scores-table-head">Golfer</div>
+                <div className="scores-table-head center">Score</div>
+                <div className="scores-table-head center">Hole</div>
+                <div className="scores-table-head center">Status</div>
 
-                {poolScoreRows.map((score) => {
+                {scoreTableRows.map((score) => {
                   const hole = score.thru ? parseHole(score.thru) : null
                   return (
-                    <div key={`score-${score.name}`} className="score-row">
-                      <div>
-                        <div className={TOP5.includes(score.name as (typeof TOP5)[number]) ? 'bold-name' : ''}>
+                    <div key={`score-${score.name}`} className="scores-table-row">
+                      <div className="scores-table-cell golfer">
+                        <span className={TOP5.includes(score.name as (typeof TOP5)[number]) ? 'bold-name' : ''}>
                           {score.name}
-                        </div>
-                        {score.note ? <div className="sub-note">{score.note}</div> : null}
+                        </span>
+                        {TOP5.includes(score.name as (typeof TOP5)[number]) ? <span className="badge badge-gold mini-badge">T5</span> : null}
                       </div>
-                      <div className={`center score-value ${toparClass(score.rawTopar)}`}>{fmtTopar(score.rawTopar)}</div>
-                      <div className={`center score-value ${toparClass(score.effectiveTopar)}`}>{fmtTopar(score.effectiveTopar)}</div>
-                      <div className="center">
+                      <div className={`scores-table-cell center ${toparClass(score.topar)}`}>{fmtTopar(score.topar)}</div>
+                      <div className="scores-table-cell center">
+                        {score.status !== 'active' ? '—' : hole === 'F' ? 'F' : hole ?? '—'}
+                      </div>
+                      <div className="scores-table-cell center">
                         <span className={`badge ${statusBadgeClass(score.status)}`}>{statusLabel(score.status)}</span>
-                      </div>
-                      <div className="center">
-                        {score.status !== 'active' ? (
-                          <span className="hole-muted">—</span>
-                        ) : hole === 'F' ? (
-                          <span className="hole-final">F</span>
-                        ) : hole ? (
-                          <span className="hole-live">{hole}</span>
-                        ) : (
-                          <span className="hole-muted">—</span>
-                        )}
                       </div>
                     </div>
                   )
@@ -1358,8 +1282,14 @@ function compareNullableNumbers(a: number | null, b: number | null): number {
   return a - b
 }
 
-function sortPoolRows(a: EffectivePoolScore, b: EffectivePoolScore): number {
-  const scoreCompare = compareNullableNumbers(a.effectiveTopar, b.effectiveTopar)
+function sortScoreTableRows(
+  a: { name: string; topar: number | null; status: PlayerStatus },
+  b: { name: string; topar: number | null; status: PlayerStatus },
+): number {
+  if (a.status === 'active' && b.status !== 'active') return -1
+  if (a.status !== 'active' && b.status === 'active') return 1
+
+  const scoreCompare = compareNullableNumbers(a.topar, b.topar)
   if (scoreCompare !== 0) return scoreCompare
   return a.name.localeCompare(b.name)
 }
@@ -1406,9 +1336,11 @@ function formatSubmittedTiebreaker(value: number | null): string {
   return Math.abs(value) > 100 ? `${value}` : fmtTopar(value)
 }
 
-function formatOffBy(value: number | null): string {
-  if (value === null || value === undefined) return '—'
-  return `${value}`
+function pickChipClassName(detail: EntryScoreDetail): string {
+  if (detail.status !== 'active') return 'leaderboard-pick-chip penalty'
+  if (detail.isWinnerPick || detail.isTournamentWinner) return 'leaderboard-pick-chip winner'
+  if (detail.isTop5) return 'leaderboard-pick-chip top5'
+  return 'leaderboard-pick-chip'
 }
 
 function safeId(name: string): string {
